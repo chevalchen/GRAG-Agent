@@ -15,7 +15,7 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-from utils.env_utils import KIMI_API_KEY, MOONSHOT_API_KEY
+from src.utils.env_utils import KIMI_API_KEY, MOONSHOT_API_KEY
 
 def load_config():
     """加载配置文件"""

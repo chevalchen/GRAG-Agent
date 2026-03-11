@@ -8,7 +8,7 @@ from typing import List
 
 from openai import OpenAI
 from langchain_core.documents import Document
-from utils.env_utils import LANGCHAIN_TRACING_V2, LANGSMITH_TRACING, MOONSHOT_API_KEY, MOONSHOT_BASE_URL
+from src.utils.env_utils import LANGCHAIN_TRACING_V2, LANGSMITH_TRACING, MOONSHOT_API_KEY, MOONSHOT_BASE_URL
 
 logger = logging.getLogger(__name__)
 

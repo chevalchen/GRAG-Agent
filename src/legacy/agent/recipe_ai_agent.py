@@ -20,7 +20,7 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-from utils.env_utils import KIMI_API_KEY, LANGCHAIN_TRACING_V2, LANGSMITH_TRACING, MOONSHOT_API_KEY
+from src.utils.env_utils import KIMI_API_KEY, LANGCHAIN_TRACING_V2, LANGSMITH_TRACING, MOONSHOT_API_KEY
 
 @dataclass
 class IngredientInfo:
@@ -610,14 +610,7 @@ class RecipeKnowledgeGraphBuilder:
         self.concept_id_counter += 1
         return str(self.concept_id_counter)
     
-    def process_recipe(self, markdown_content: str, file_path: str) -> Dict:
-        """处理单个菜谱"""
-        # 处理菜谱
-        
-        # 使用AI提取菜谱信息
-        recipe_info = self.ai_agent.extract_recipe_info(markdown_content, file_path)
-        
-        # 生成概念ID
+    def process_recipe_info(self, recipe_info: RecipeInfo, file_path: str) -> Dict:
         recipe_id = self.generate_concept_id()
         
         # 创建菜谱概念
@@ -736,6 +729,10 @@ class RecipeKnowledgeGraphBuilder:
             })
         
         return recipe_concept
+
+    def process_recipe(self, markdown_content: str, file_path: str) -> Dict:
+        recipe_info = self.ai_agent.extract_recipe_info(markdown_content, file_path)
+        return self.process_recipe_info(recipe_info, file_path)
     
     def _generate_recipe_synonyms(self, name: str, category: str) -> List[str]:
         """生成菜谱的同义词列表"""
