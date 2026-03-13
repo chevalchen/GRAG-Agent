@@ -1,151 +1,152 @@
-# C9 项目当前状态说明（LangGraph GraphRAG）
+# CLAUDE.md
 
-本文档描述当前代码的真实形态，用于后续开发与排障时快速对齐。
+本文件为 AI 辅助开发提供项目上下文，帮助 Claude 等工具快速理解代码库结构与约定。
 
-## 1. 项目目标
+---
 
-项目包含两条主线：
+## 项目概述
 
-- 在线问答（`src/app/online_qa`）
-  - 查询分析与路由（hybrid / graph_rag / combined）
-  - 检索、融合、生成回答
-  - 支持会话 ID 维度的多轮对话
-- 离线构建（`src/app/offline_ingestion`）
-  - 扫描菜谱文件、并发解析、批次落盘、导出 CSV
+这是一个**菜谱知识图谱问答系统**，基于 GraphRAG 架构，结合 Neo4j 图数据库、Milvus 向量数据库和大语言模型（LLM），支持对菜谱知识进行智能问答。
 
-## 2. 当前代码分层
+核心功能：
+- **离线 Ingestion**：解析 Markdown 格式菜谱，通过 AI Agent（Kimi/Moonshot）提取结构化知识，构建 Neo4j 知识图谱
+- **在线问答**：基于 LangGraph 的多节点流水线，支持混合检索（Hybrid RAG + Graph RAG）和多轮对话
 
-### 2.1 App 层（业务编排）
+---
 
-- 在线编排：
-  - `src/app/online_qa/graphs/online_qa_graph.py`
-  - `src/app/online_qa/nodes/*.py`（6 个节点）
-  - `src/app/online_qa/tools/*.py`
-  - `src/app/online_qa/state.py`
-  - `src/app/online_qa/checkpointer.py`
-  - `src/app/online_qa/cli.py`
-- 离线编排：
-  - `src/app/offline_ingestion/graphs/ingestion_graph.py`
-  - `src/app/offline_ingestion/tools/*.py`
-  - `src/app/offline_ingestion/state.py`
-  - `src/app/offline_ingestion/cli.py`
-
-### 2.2 Core 层（通用契约与基础工具）
-
-- Schema：
-  - `src/core/schemas/document.py`
-- DB client：
-  - `src/core/tools/db/neo4j_client.py`
-  - `src/core/tools/db/milvus_client.py`
-- LLM client/tool：
-  - `src/core/tools/llm/llm_client.py`
-  - `src/core/tools/llm/embedding_client.py`
-  - `src/core/tools/llm/generation_tool.py`
-
-### 2.3 Legacy 层（被封装依赖）
-
-- `src/legacy/rag_modules/*`
-- `src/legacy/agent/*`
-
-原则：`src/app/**` 负责编排，`src/legacy/**` 负责兼容实现，不直接改写 legacy 核心逻辑。
-
-## 3. 在线问答链路（现状）
-
-### 3.1 图结构
-
-`START -> query_analysis -> route -> (hybrid_retrieve / graph_retrieve) -> fuse -> answer -> END`
-
-### 3.2 节点职责
-
-- `query_analysis_node`：写 `analysis`
-- `route_node`：写 `route`
-- `hybrid_retrieve_node`：写 `hybrid_docs`
-- `graph_retrieve_node`：写 `graph_docs`
-- `fuse_node`：写 `fused_docs` 与 `docs_final`
-- `answer_node`：写 `answer`，并追加本轮 `history`
-
-### 3.3 多轮对话机制
-
-当前是双层机制：
-
-1) 图内会话（同进程）  
-- `build_graph()` 绑定 `get_checkpointer()`（MemorySaver）
-- `thread_id` 通过 `config={"configurable":{"thread_id": session_id}}` 传入
-
-2) 跨进程会话（CLI 多次命令）  
-- `src/app/online_qa/cli.py` 将历史持久化到 `.session_history/<session-id>.json`
-- 每次调用前加载历史并注入 `online_graph.ainvoke(..., history=...)`
-- 回答后回写 history，保证两次 `python -m ... --session-id xxx` 可连续对话
-
-说明：MemorySaver 仅进程内有效；跨命令连续对话依赖 `.session_history` 文件。
-
-### 3.4 生成侧策略
-
-- `AnswerGenerationTool` 已支持：
-  - 基于 429/过载关键词自动重试
-  - 将近几轮 history 拼入有效问题，增强追问理解
-
-## 4. 离线 ingestion（现状）
-
-- 图在 `src/app/offline_ingestion/graphs/ingestion_graph.py`
-- 解析/构建/导出/进度分别封装为：
-  - `parse_tool.py`
-  - `build_tool.py`
-  - `export_tool.py`
-  - `progress_tool.py`
-- `ingestion_graph.py` 不直接 import `src.legacy`，而经由 tools 调用
-
-## 5. 运行方式
-
-### 5.1 安装
-
-```bash
-pip install -r requirements.txt
+## 项目结构
+```
+src/
+├── app/                         # 应用层（LangGraph 流水线）
+│   ├── config.py                # 全局配置（GraphRAGConfig, DEFAULT_CONFIG）
+│   ├── offline_ingestion/       # 离线知识入库流水线
+│   │   ├── cli.py               # 入口：python -m src.app.offline_ingestion.cli
+│   │   └── graphs/ingestion_graph.py
+│   └── online_qa/               # 在线问答流水线
+│       ├── cli.py               # 入口：python -m src.app.online_qa.cli
+│       ├── graphs/online_qa_graph.py   # LangGraph 图定义
+│       ├── nodes/               # 各节点（query_analysis, route, retrieve, fuse, answer）
+│       ├── tools/               # 工具封装（hybrid_search, graph_rag_search 等）
+│       ├── state.py             # OnlineQAState TypedDict
+│       └── checkpointer.py      # SQLite checkpoint（多轮对话持久化）
+└── legacy/                      # 底层模块（被 app 层调用）
+    ├── rag_modules/
+    │   ├── graph_data_preparation.py    # Neo4j 数据加载与文档构建
+    │   ├── milvus_index_construction.py # Milvus 向量索引
+    │   ├── hybrid_retrieval.py          # 混合检索（BM25 + Milvus + 图）
+    │   ├── graph_rag_retrieval.py       # 图 RAG 检索（多跳推理）
+    │   ├── graph_indexing.py            # 实体/关系键值对索引
+    │   ├── intelligent_query_router.py  # 智能路由（hybrid / graph_rag / combined）
+    │   └── generation_integration.py   # LLM 答案生成
+    └── agent/
+        ├── recipe_ai_agent.py   # Kimi AI Agent（菜谱解析）
+        ├── batch_manager.py     # 批量处理与断点续传
+        └── run_ai_agent.py      # 旧版运行入口
 ```
 
-### 5.2 在线问答
+---
 
+## 常用命令
+
+### 离线入库（解析菜谱 → Neo4j）
 ```bash
-python -m src.app.online_qa
-python -m src.app.online_qa --query "红烧肉怎么做？"
-python -m src.app.online_qa --session-id test-001 --query "红烧肉怎么做？"
-python -m src.app.online_qa --session-id test-001 --query "可以用电饭锅吗？"
-python -m src.app.online_qa --stream --session-id test-001 --query "继续"
+python -m src.app.offline_ingestion.cli ./HowToCook-master \
+    -o ./ai_output \
+    --output-format neo4j \
+    --batch-size 20 \
+    --resume
 ```
 
-### 5.3 离线构建
-
+### 在线问答（交互式 CLI）
 ```bash
-python -m src.app.offline_ingestion <recipe_dir> -o ./ai_output --resume
+python -m src.app.online_qa.cli
+# 单次提问
+python -m src.app.online_qa.cli --query "红烧肉怎么做？" --stream
+# 指定会话 ID（多轮对话）
+python -m src.app.online_qa.cli --session-id my_session
 ```
 
-### 5.4 测试
+---
 
-```bash
-python -m unittest discover -s tests -p "test_*.py" -q
+## 技术栈
+
+| 组件 | 技术 |
+|------|------|
+| 流水线框架 | LangGraph 1.1.0 |
+| 图数据库 | Neo4j 6.x |
+| 向量数据库 | Milvus（pymilvus 2.5.x）|
+| 嵌入模型 | `BAAI/bge-small-zh-v1.5`（HuggingFace，512 维）|
+| LLM | OpenAI 兼容接口（默认 Kimi/Moonshot）|
+| BM25 检索 | `rank-bm25` + LangChain BM25Retriever |
+| 对话持久化 | SQLite（`.checkpoints/c9.db`）|
+| 依赖管理 | pip / requirements.txt |
+
+---
+
+## 配置
+
+配置入口：`src/app/config.py`，关键类：
+
+- `Config`：从环境变量读取（`SESSION_ID` 等）
+- `GraphRAGConfig`：完整 RAG 配置（Neo4j、Milvus、LLM、检索参数）
+- `DEFAULT_CONFIG`：默认配置实例
+
+主要环境变量（建议写入 `.env`）：
+```
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=your_password
+MILVUS_HOST=localhost
+MILVUS_PORT=19530
+KIMI_API_KEY=sk-xxx
+SESSION_ID=（可选，固定会话 ID）
 ```
 
-## 6. 配置与环境变量
+---
 
-- 配置入口：`src/app/config.py`
-- 环境变量加载：`src/utils/env_utils.py`
+## 架构说明
 
-关键变量：
+### 在线问答流（LangGraph）
+```
+START → query_analysis → route → hybrid_retrieve ─┐
+                                → graph_retrieve  ─┴→ fuse → answer → END
+```
 
-- LLM：`MOONSHOT_API_KEY`、`MOONSHOT_BASE_URL`
-- Neo4j：`NEO4J_URI`、`NEO4J_USER`、`NEO4J_PASSWORD`、`NEO4J_DATABASE`
-- Milvus：`MILVUS_HOST`、`MILVUS_PORT`、`MILVUS_COLLECTION_NAME`
+- **query_analysis**：提取关键词、意图、复杂度，决定路由策略
+- **route**：根据 `analysis.recommended_strategy` 路由到 `hybrid` / `graph_rag` / `combined`
+- **hybrid_retrieve**：BM25 + Milvus 向量检索 + 图一跳扩展
+- **graph_retrieve**：多跳图遍历、子图提取、路径推理
+- **fuse**：Round-robin 合并去重
+- **answer**：LLM 生成最终回答，支持流式输出
 
-## 7. 当前目录要点
+### 检索策略路由
 
-- `src/app/online_qa/nodes/` 已替代旧 `agents/` 目录
-- `src/core/` 已建立并用于共享 schema 与基础工具
-- `.session_history/` 用于 CLI 跨进程会话历史持久化
+| 策略 | 触发条件 |
+|------|----------|
+| `hybrid` | 普通问答，关键词匹配为主 |
+| `graph_rag` | 高关系密集度，需要多跳推理 |
+| `combined` | 高复杂度，两路并行检索后融合 |
 
-## 8. 维护注意事项
+---
 
-- 不修改 `src/legacy/**` 的业务语义，优先在 app/core 层做封装与编排
-- 多轮问题优先检查：
-  - `--session-id` 是否一致
-  - `.session_history/<session-id>.json` 是否混入旧上下文
-  - `answer_generation.py` 的 history 拼接是否生效
+## 开发约定
+
+- 所有底层模块位于 `src/legacy/`，应用层封装在 `src/app/`
+- 新增检索节点请参照 `src/app/online_qa/nodes/` 下的现有节点模式
+- LangGraph 状态类型定义在 `src/app/online_qa/state.py`（`OnlineQAState` TypedDict）
+- 日志级别通过 `--log-level` 参数控制，默认 `WARN`
+- 安装依赖：`pip install -r requirements.txt --break-system-packages`
+- PyTorch 使用 CUDA 版本（`torch==2.6.0+cu126`），确保 CUDA 环境匹配
+
+---
+
+## 数据格式
+
+菜谱 Markdown 文件位于 `./HowToCook-master/dishes/` 下，按菜系分子目录。
+
+Neo4j 图节点类型：
+- `Recipe`：菜谱节点（nodeId 前缀 `1xxx`）
+- `Ingredient`：食材节点
+- `CookingStep`：烹饪步骤节点（nodeId ≥ `200000000`）
+
+关系类型：`REQUIRES`（菜谱→食材）、`CONTAINS_STEP`（菜谱→步骤）
