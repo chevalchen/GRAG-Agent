@@ -1,13 +1,12 @@
-import asyncio
 import unittest
 
-from src.app.online_qa.tools.registry import make_tool_context
+from src.app.online_qa.tools.hybrid_search import HybridSearchTool
+from src.app.online_qa.tools.query_analysis import QueryAnalysisTool
+from src.app.online_qa.tools.registry import assert_tool_allowed
 
 
-class ToolPermissionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_tool_context_denies_unlisted_tool(self):
-        ctx = make_tool_context({"a": object(), "b": object()}, allowed=["a"])
-        self.assertIsNotNone(ctx.get("a"))
+class ToolPermissionTests(unittest.TestCase):
+    def test_registry_denies_unlisted_tool(self):
+        assert_tool_allowed("query_analysis_node", QueryAnalysisTool)
         with self.assertRaises(PermissionError):
-            ctx.get("b")
-
+            assert_tool_allowed("query_analysis_node", HybridSearchTool)

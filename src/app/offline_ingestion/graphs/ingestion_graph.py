@@ -1,12 +1,15 @@
-import asyncio
+import concurrent.futures
 import os
 import time
-from typing import List, Optional, Tuple
+from typing import Optional
 
 from langgraph.graph import END, StateGraph
 
-from src.legacy.agent.recipe_ai_agent import KimiRecipeAgent, RecipeInfo, RecipeKnowledgeGraphBuilder
 from src.app.offline_ingestion.state import OfflineIngestionState
+from src.app.offline_ingestion.tools.build_tool import GraphRecordBuilderTool
+from src.app.offline_ingestion.tools.export_tool import ExporterTool
+from src.app.offline_ingestion.tools.parse_tool import RecipeParseTool, create_builder
+from src.app.offline_ingestion.tools.progress_tool import ProgressStoreTool
 from src.app.offline_ingestion.tools.scan_files import scan_recipe_files
 from src.utils.env_utils import KIMI_API_KEY, MOONSHOT_API_KEY
 
@@ -25,7 +28,11 @@ class OfflineIngestionGraph:
         self._base_url = base_url
 
         self._api_key = KIMI_API_KEY or MOONSHOT_API_KEY
-        self._builder: Optional[RecipeKnowledgeGraphBuilder] = None
+        self._builder = None
+        self._parse_tool: Optional[RecipeParseTool] = None
+        self._build_tool: Optional[GraphRecordBuilderTool] = None
+        self._export_tool: Optional[ExporterTool] = None
+        self._progress_tool: Optional[ProgressStoreTool] = None
         self._graph = self._build()
 
     def _build(self):
@@ -46,7 +53,7 @@ class OfflineIngestionGraph:
         g.add_edge("export", END)
         return g.compile()
 
-    async def ainvoke(self, recipe_dir: str, output_dir: str, output_format: str = "neo4j", resume: bool = True):
+    def invoke(self, recipe_dir: str, output_dir: str, output_format: str = "neo4j", resume: bool = True):
         state: OfflineIngestionState = {
             "recipe_dir": recipe_dir,
             "output_dir": output_dir,
@@ -61,16 +68,15 @@ class OfflineIngestionGraph:
             "metrics": {},
             "error": None,
         }
-        return await self._graph.ainvoke(state)
+        return self._graph.invoke(state)
 
-    async def _init(self, state: OfflineIngestionState):
+    def _init(self, state: OfflineIngestionState):
         if not self._api_key:
             return {"error": "missing_api_key"}
 
         os.makedirs(state["output_dir"], exist_ok=True)
 
-        ai_agent = KimiRecipeAgent(self._api_key, self._base_url)
-        builder = RecipeKnowledgeGraphBuilder(ai_agent, state["output_dir"], self._batch_size)
+        builder = create_builder(self._api_key, self._base_url, state["output_dir"], self._batch_size)
         if state["resume"]:
             builder.load_progress()
         else:
@@ -83,9 +89,13 @@ class OfflineIngestionGraph:
                 except Exception:
                     pass
         self._builder = builder
+        self._parse_tool = RecipeParseTool(self._api_key, self._base_url, state["recipe_dir"])
+        self._build_tool = GraphRecordBuilderTool(builder)
+        self._export_tool = ExporterTool(builder)
+        self._progress_tool = ProgressStoreTool(builder)
         return {}
 
-    async def _scan(self, state: OfflineIngestionState):
+    def _scan(self, state: OfflineIngestionState):
         if state.get("error") or not self._builder:
             return {}
 
@@ -121,31 +131,35 @@ class OfflineIngestionGraph:
             return "finalize"
         return "continue"
 
-    async def _parse_batch(self, state: OfflineIngestionState):
+    def _parse_batch(self, state: OfflineIngestionState):
         if state.get("error") or not self._builder:
             return {}
         if state["next_index"] >= len(state["file_list"]):
             return {}
 
         start = time.time()
-        semaphore = asyncio.Semaphore(self._parse_concurrency)
-
         batch_paths = state["file_list"][state["next_index"] : state["next_index"] + self._parse_concurrency]
-        tasks = [asyncio.create_task(self._parse_one(p, state["recipe_dir"], semaphore)) for p in batch_paths]
-        results = await asyncio.gather(*tasks)
+        results = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self._parse_concurrency) as executor:
+            futures = [executor.submit(self._parse_one, p, state["recipe_dir"]) for p in batch_paths]
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception as e:
+                    results.append({"ok": False, "rel_path": "", "recipe_info": None, "error": str(e)})
 
         processed = state["processed"]
         failed = state["failed"]
         current_batch_count = state["current_batch_count"]
 
-        for ok, rel_path, recipe_info, err in results:
-            if ok and recipe_info:
-                self._builder.process_recipe_info(recipe_info, rel_path)
-                self._builder.processed_files.add(rel_path)
+        for parsed in results:
+            if parsed.get("ok") and parsed.get("recipe_info"):
+                self._build_tool.build(parsed)
                 processed += 1
                 current_batch_count += 1
                 if processed % self._save_every == 0:
-                    self._builder.save_progress(rel_path, state["total_files"], processed)
+                    progress_state = {**state, "processed": processed}
+                    self._progress_tool.save(progress_state, parsed.get("rel_path", ""))
             else:
                 failed += 1
 
@@ -159,56 +173,46 @@ class OfflineIngestionGraph:
             "metrics": {**state["metrics"], "last_parse_seconds": elapsed},
         }
 
-    async def _parse_one(self, abs_path: str, recipe_root: str, semaphore: asyncio.Semaphore) -> Tuple[bool, str, Optional[RecipeInfo], Optional[str]]:
+    def _parse_one(self, abs_path: str, recipe_root: str) -> dict:
+        for attempt in range(3):
+            try:
+                return self._parse_tool.parse(abs_path)
+            except Exception as e:
+                if attempt == 2:
+                    rel_path = os.path.relpath(abs_path, recipe_root)
+                    return {"ok": False, "rel_path": rel_path, "recipe_info": None, "error": str(e)}
+                time.sleep(min(2 ** attempt, 4))
         rel_path = os.path.relpath(abs_path, recipe_root)
-        async with semaphore:
-            for attempt in range(3):
-                try:
-                    return await asyncio.to_thread(self._parse_one_sync, abs_path, rel_path)
-                except Exception as e:
-                    if attempt == 2:
-                        return False, rel_path, None, str(e)
-                    await asyncio.sleep(min(2 ** attempt, 4))
-        return False, rel_path, None, "unknown"
+        return {"ok": False, "rel_path": rel_path, "recipe_info": None, "error": "unknown"}
 
-    def _parse_one_sync(self, abs_path: str, rel_path: str) -> Tuple[bool, str, Optional[RecipeInfo], Optional[str]]:
-        with open(abs_path, "r", encoding="utf-8") as f:
-            content = f.read()
-        agent = KimiRecipeAgent(self._api_key, self._base_url)
-        recipe_info = agent.extract_recipe_info(content, rel_path)
-        return True, rel_path, recipe_info, None
-
-    async def _flush(self, state: OfflineIngestionState):
+    def _flush(self, state: OfflineIngestionState):
         if state.get("error") or not self._builder:
             return {}
         if state["current_batch_count"] <= 0:
             return {"current_batch_count": 0}
 
         start = time.time()
-        await asyncio.to_thread(self._builder.save_batch_data)
+        self._builder.save_batch_data()
         self._builder.concepts.clear()
         self._builder.relationships.clear()
         self._builder.current_batch += 1
-        self._builder.save_progress("BATCH_FLUSH", state["total_files"], state["processed"])
+        self._progress_tool.save(state, "BATCH_FLUSH")
         return {"current_batch_count": 0, "metrics": {**state["metrics"], "last_flush_seconds": time.time() - start}}
 
-    async def _finalize(self, state: OfflineIngestionState):
+    def _finalize(self, state: OfflineIngestionState):
         if state.get("error") or not self._builder:
             return {}
         if state["current_batch_count"] > 0:
-            await asyncio.to_thread(self._builder.save_batch_data)
+            self._builder.save_batch_data()
             self._builder.concepts.clear()
             self._builder.relationships.clear()
             self._builder.current_batch += 1
-        self._builder.save_progress("COMPLETED", state["total_files"], state["processed"])
+        self._progress_tool.save(state, "COMPLETED")
         return {}
 
-    async def _export(self, state: OfflineIngestionState):
+    def _export(self, state: OfflineIngestionState):
         if state.get("error") or not self._builder:
             return {}
         start = time.time()
-        if state["output_format"] == "neo4j":
-            await asyncio.to_thread(self._builder.export_to_neo4j_csv, state["output_dir"], True)
-        else:
-            await asyncio.to_thread(self._builder.merge_all_batches)
+        self._export_tool.export_csv([], state["output_dir"], state["output_format"])
         return {"metrics": {**state["metrics"], "export_seconds": time.time() - start, "exported": True}}

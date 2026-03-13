@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from typing import Any, Dict
 
+from src.utils import env_utils
+
 
 @dataclass
 class GraphRAGConfig:
@@ -17,7 +19,7 @@ class GraphRAGConfig:
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     llm_model: str = "kimi-k2-0711-preview"
 
-    top_k: int = 5
+    top_k: int = 3
 
     temperature: float = 0.1
     max_tokens: int = 2048
@@ -53,3 +55,13 @@ class GraphRAGConfig:
 
 DEFAULT_CONFIG = GraphRAGConfig()
 
+
+class Config:
+    NEO4J_URI = env_utils.NEO4J_URI or DEFAULT_CONFIG.neo4j_uri
+    NEO4J_USER = env_utils.NEO4J_USER or DEFAULT_CONFIG.neo4j_user
+    NEO4J_PASSWORD = env_utils.NEO4J_PASSWORD or DEFAULT_CONFIG.neo4j_password
+    NEO4J_DATABASE = env_utils.NEO4J_DATABASE or DEFAULT_CONFIG.neo4j_database
+    MILVUS_HOST = env_utils.MILVUS_HOST or DEFAULT_CONFIG.milvus_host
+    MILVUS_PORT = int(env_utils.MILVUS_PORT or DEFAULT_CONFIG.milvus_port)
+    MILVUS_COLLECTION_NAME = env_utils.MILVUS_COLLECTION_NAME or DEFAULT_CONFIG.milvus_collection_name
+    SESSION_ID = env_utils.C9_SESSION_ID or None

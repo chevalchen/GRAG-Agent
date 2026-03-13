@@ -1,5 +1,4 @@
 import argparse
-import asyncio
 
 from src.app.offline_ingestion.graphs.ingestion_graph import OfflineIngestionGraph
 
@@ -18,7 +17,7 @@ def main(argv=None):
         batch_size=args.batch_size,
         parse_concurrency=args.parse_concurrency,
     )
-    asyncio.run(graph.ainvoke(args.recipe_dir, args.output_dir, output_format=args.output_format, resume=args.resume))
+    graph.invoke(args.recipe_dir, args.output_dir, output_format=args.output_format, resume=args.resume)
 
 
 if __name__ == "__main__":

@@ -1,70 +1,15 @@
 import argparse
-import asyncio
 import logging
+import sqlite3
+import uuid
 
-from src.app.config import DEFAULT_CONFIG, GraphRAGConfig
+from src.app.config import Config, DEFAULT_CONFIG, GraphRAGConfig
 from src.app.online_qa.graphs.online_qa_graph import OnlineQAGraph
-from src.app.online_qa.tools.answer_generation import AnswerGenerationTool
-from src.app.online_qa.tools.graph_rag_search import GraphRAGSearchTool
-from src.app.online_qa.tools.hybrid_search import HybridSearchTool
-from src.legacy.rag_modules.generation_integration import GenerationIntegrationModule
-from src.legacy.rag_modules.graph_data_preparation import GraphDataPreparationModule
-from src.legacy.rag_modules.graph_rag_retrieval import GraphRAGRetrieval
-from src.legacy.rag_modules.hybrid_retrieval import HybridRetrievalModule
-from src.legacy.rag_modules.intelligent_query_router import IntelligentQueryRouter
-from src.legacy.rag_modules.milvus_index_construction import MilvusIndexConstructionModule
+from src.app.online_qa.tools.runtime_factory import OnlineQASystem, build_online_qa_system
 
 
 def _build_system(config: GraphRAGConfig):
-    data_module = GraphDataPreparationModule(
-        uri=config.neo4j_uri,
-        user=config.neo4j_user,
-        password=config.neo4j_password,
-        database=config.neo4j_database,
-    )
-    index_module = MilvusIndexConstructionModule(
-        host=config.milvus_host,
-        port=config.milvus_port,
-        collection_name=config.milvus_collection_name,
-        dimension=config.milvus_dimension,
-        model_name=config.embedding_model,
-    )
-    generation_module = GenerationIntegrationModule(
-        model_name=config.llm_model,
-        temperature=config.temperature,
-        max_tokens=config.max_tokens,
-    )
-
-    traditional_retrieval = HybridRetrievalModule(
-        config=config,
-        milvus_module=index_module,
-        data_module=data_module,
-        llm_client=generation_module.client,
-    )
-    graph_rag_retrieval = GraphRAGRetrieval(config=config, llm_client=generation_module.client)
-    query_router = IntelligentQueryRouter(
-        traditional_retrieval=traditional_retrieval,
-        graph_rag_retrieval=graph_rag_retrieval,
-        llm_client=generation_module.client,
-        config=config,
-    )
-
-    online_graph = OnlineQAGraph(
-        router=query_router,
-        hybrid_tool=HybridSearchTool(traditional_retrieval),
-        graph_tool=GraphRAGSearchTool(graph_rag_retrieval),
-        answer_tool=AnswerGenerationTool(generation_module),
-        top_k=config.top_k,
-    )
-    return (
-        data_module,
-        index_module,
-        generation_module,
-        online_graph,
-        query_router,
-        traditional_retrieval,
-        graph_rag_retrieval,
-    )
+    return build_online_qa_system(config)
 
 
 def _ensure_kb(config: GraphRAGConfig, data_module, index_module):
@@ -126,8 +71,17 @@ def _print_metrics(state):
         print("⏱️ " + ", ".join(parts))
 
 
-async def _ask_once(online_graph: OnlineQAGraph, generation_module, query: str, stream: bool, verbose: bool, show_metrics: bool):
-    state = await online_graph.ainvoke(query, stream=stream)
+def _ask_once(
+    online_graph: OnlineQAGraph,
+    generation_module,
+    query: str,
+    stream: bool,
+    verbose: bool,
+    show_metrics: bool,
+    session_id: str | None,
+):
+    sid = session_id or str(uuid.uuid4())
+    state = online_graph.invoke(query, stream=stream, session_id=sid)
     docs = state.get("docs_final", [])
     if verbose:
         _print_route_summary(state)
@@ -136,7 +90,9 @@ async def _ask_once(online_graph: OnlineQAGraph, generation_module, query: str, 
             _print_metrics(state)
     if stream:
         print("回答:")
+        stream_parts = []
         for chunk in generation_module.generate_adaptive_answer_stream(query, docs):
+            stream_parts.append(chunk)
             print(chunk, end="", flush=True)
         print()
         return
@@ -144,43 +100,185 @@ async def _ask_once(online_graph: OnlineQAGraph, generation_module, query: str, 
     print(state.get("answer") or "")
 
 
+def _list_history_sessions(db_path: str = ".checkpoints/c9.db") -> list[tuple[str, str]]:
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT c.thread_id, c.checkpoint_id
+            FROM checkpoints c
+            JOIN (
+                SELECT thread_id, MAX(rowid) AS last_rowid
+                FROM checkpoints
+                GROUP BY thread_id
+            ) last ON last.thread_id = c.thread_id AND last.last_rowid = c.rowid
+            ORDER BY c.rowid DESC
+            """
+        )
+        rows = cur.fetchall() or []
+        conn.close()
+    except Exception:
+        return []
+    sessions = []
+    for thread_id, checkpoint_id in rows:
+        sessions.append((str(thread_id), str(checkpoint_id)))
+    return sessions
+
+
+def _delete_session(db_path: str, session_id: str) -> bool:
+    try:
+        conn = sqlite3.connect(db_path)
+        cur = conn.cursor()
+        cur.execute("DELETE FROM writes WHERE thread_id = ?", (session_id,))
+        cur.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def _choose_session_id(cli_session_id: str) -> str:
+    if cli_session_id and cli_session_id != "default":
+        return cli_session_id
+    configured = Config.SESSION_ID
+    if configured:
+        use_it = input(f"检测到配置的会话：{configured}，是否使用？(y/n) ").strip().lower()
+        if use_it == "y":
+            return configured
+    db_path = ".checkpoints/c9.db"
+    while True:
+        sessions = _list_history_sessions(db_path=db_path)
+        print("历史会话列表（按最近使用排序）：")
+        for idx, (sid, last_checkpoint_id) in enumerate(sessions, start=1):
+            print(f"  {idx}. {sid}（最后 checkpoint：{last_checkpoint_id}）")
+        print("  0. 创建新会话")
+        print("  d. 删除会话")
+        print("  q. 退出")
+        choice = input("请选择会话编号：").strip().lower()
+        if choice == "q":
+            raise SystemExit(0)
+        if choice == "d":
+            if not sessions:
+                continue
+            target = input("请输入要删除的会话编号或 session_id：").strip()
+            if not target:
+                continue
+            target_sid = target
+            if target.isdigit():
+                idx = int(target)
+                if idx <= 0 or idx > len(sessions):
+                    continue
+                target_sid = sessions[idx - 1][0]
+            confirm = input(f"确认删除会话 {target_sid}？(y/n) ").strip().lower()
+            if confirm != "y":
+                continue
+            ok = _delete_session(db_path=db_path, session_id=target_sid)
+            if ok:
+                print(f"已删除会话：{target_sid}")
+            else:
+                print("删除失败。")
+            continue
+        if choice == "0" or not sessions:
+            sid = input("请输入新 session_id（留空自动生成）：").strip() or str(uuid.uuid4())
+            print(f"如需下次自动使用此会话，请在 .env 中设置：\nC9_SESSION_ID={sid}")
+            return sid
+        try:
+            selected = sessions[int(choice) - 1][0]
+        except Exception:
+            selected = sessions[0][0]
+        print(f"如需下次自动使用此会话，请在 .env 中设置：\nC9_SESSION_ID={selected}")
+        return selected
+
+
+def run_history_mode(system: OnlineQASystem, args, verbose_enabled: bool) -> None:
+    session_id = _choose_session_id(args.session_id)
+    while True:
+        q = input("\n请输入您的问题: ").strip()
+        if not q:
+            continue
+        if q.lower() in {"quit", "exit"}:
+            break
+        _ask_once(
+            system.online_graph,
+            system.generation_module,
+            q,
+            args.stream,
+            verbose_enabled,
+            args.show_metrics,
+            session_id,
+        )
+
+
+def run_single_mode(system: OnlineQASystem, args, verbose_enabled: bool) -> None:
+    q = input("\n请输入问题: ").strip()
+    if not q:
+        return
+    _ask_once(
+        system.online_graph,
+        system.generation_module,
+        q,
+        args.stream,
+        verbose_enabled,
+        args.show_metrics,
+        None,
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="online_qa", description="LangGraph 在线问答")
     parser.add_argument("--top-k", type=int, default=DEFAULT_CONFIG.top_k)
     parser.add_argument("--stream", action="store_true")
     parser.add_argument("--query", type=str, default="")
+    parser.add_argument("--session-id", type=str, default="default")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--show-metrics", action="store_true")
-    parser.add_argument("--log-level", type=str, default="WARNING", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+    parser.add_argument("--log-level", type=str, default="WARN", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=getattr(logging, args.log_level), format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    log_level = getattr(logging, args.log_level)
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        force=True,
+    )
+    logging.getLogger("src").setLevel(log_level)
+    logging.getLogger("src.legacy").setLevel(log_level)
+    logging.getLogger("src.app").setLevel(log_level)
+    verbose_enabled = True
 
     config = GraphRAGConfig(**{**DEFAULT_CONFIG.to_dict(), "top_k": args.top_k})
-    (
-        data_module,
-        index_module,
-        generation_module,
-        online_graph,
-        _,
-        traditional_retrieval,
-        graph_rag_retrieval,
-    ) = _build_system(config)
-    chunks = _ensure_kb(config, data_module, index_module)
-    traditional_retrieval.initialize(chunks)
-    graph_rag_retrieval.initialize()
+    system = _build_system(config)
+    chunks = _ensure_kb(config, system.data_module, system.index_module)
+    system.traditional_retrieval.initialize(chunks)
+    system.graph_rag_retrieval.initialize()
 
     if args.query:
-        asyncio.run(_ask_once(online_graph, generation_module, args.query, args.stream, args.verbose, args.show_metrics))
+        effective_session_id = args.session_id
+        if effective_session_id == "default" and Config.SESSION_ID:
+            effective_session_id = Config.SESSION_ID
+        _ask_once(
+            system.online_graph,
+            system.generation_module,
+            args.query,
+            args.stream,
+            verbose_enabled,
+            args.show_metrics,
+            effective_session_id,
+        )
         return
 
-    while True:
-        q = input("\n您的问题(quit退出): ").strip()
-        if not q:
-            continue
-        if q.lower() == "quit":
-            break
-        asyncio.run(_ask_once(online_graph, generation_module, q, args.stream, args.verbose, args.show_metrics))
+    print("请选择模式：")
+    print("  1. 历史对话")
+    print("  2. 单次对话（不保存历史）")
+    choice = input("请输入选项 (1/2)：").strip()
+    MODES = {
+        "1": run_history_mode,
+        "2": run_single_mode,
+    }
+    runner = MODES.get(choice, run_history_mode)
+    runner(system, args, verbose_enabled)
 
 
 if __name__ == "__main__":

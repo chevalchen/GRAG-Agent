@@ -47,4 +47,4 @@ MAX_TOKENS = os.getenv("MAX_TOKENS")
 CHUNK_SIZE = os.getenv("CHUNK_SIZE")
 CHUNK_OVERLAP = os.getenv("CHUNK_OVERLAP")
 MAX_GRAPH_DEPTH = os.getenv("MAX_GRAPH_DEPTH")
-
+C9_SESSION_ID = os.getenv("C9_SESSION_ID")
