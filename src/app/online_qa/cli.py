@@ -1,29 +1,104 @@
 import argparse
 import logging
 import sqlite3
+import sys
 import uuid
 
+from langchain_core.documents import Document
+
 from src.app.config import Config, DEFAULT_CONFIG, GraphRAGConfig
-from src.app.online_qa.graphs.online_qa_graph import OnlineQAGraph
-from src.app.online_qa.tools.runtime_factory import OnlineQASystem, build_online_qa_system
+from src.app.online_qa.graphs.online_qa_graph import build_graph
+from src.core.tools.graph.neo4j_tool import Neo4jGraphTool
+from src.core.tools.llm.generation_tool import LLMGenerationTool
+from src.core.tools.retrieval.bm25_tool import BM25Tool
+from src.core.tools.vector.milvus_tool import MilvusVectorTool
+
+
+def _load_bm25_chunks(config: GraphRAGConfig, *, limit: int = 5000) -> list[Document]:
+    try:
+        from langchain_community.graphs import Neo4jGraph
+
+        graph = Neo4jGraph(
+            url=config.neo4j_uri,
+            username=config.neo4j_user,
+            password=config.neo4j_password,
+            database=config.neo4j_database,
+        )
+        rows = graph.query(
+            """
+            MATCH (r:Concept {conceptType: "Recipe"})
+            OPTIONAL MATCH (r)-[]->(i:Concept {conceptType: "Ingredient"})
+            OPTIONAL MATCH (r)-[]->(s:Concept {conceptType: "CookingStep"})
+            WITH r,
+                 collect(DISTINCT i.name)[..50] AS ingredients,
+                 collect(DISTINCT s.description)[..50] AS steps
+            RETURN r.nodeId AS node_id,
+                   r.name AS recipe_name,
+                   r.category AS category,
+                   r.cuisineType AS cuisine_type,
+                   r.difficulty AS difficulty,
+                   ingredients AS ingredients,
+                   steps AS steps
+            LIMIT $limit
+            """,
+            {"limit": int(limit)},
+        )
+    except Exception:
+        return []
+
+    docs: list[Document] = []
+    chunk_size = int(config.chunk_size)
+    chunk_overlap = int(config.chunk_overlap)
+    if chunk_overlap < 0:
+        chunk_overlap = 0
+    if chunk_overlap >= chunk_size:
+        chunk_overlap = 0
+    for row in rows or []:
+        recipe_name = row.get("recipe_name") or "未知菜谱"
+        ingredients = row.get("ingredients") or []
+        steps = row.get("steps") or []
+        full_text = "\n".join(
+            [
+                f"# {recipe_name}",
+                "",
+                "## 所需食材",
+                *[f"- {x}" for x in ingredients if x],
+                "",
+                "## 关键步骤",
+                *[f"- {x}" for x in steps if x],
+            ]
+        ).strip()
+        base_meta = {
+            "node_id": row.get("node_id") or "",
+            "node_type": "Recipe",
+            "recipe_name": recipe_name,
+            "category": row.get("category") or "",
+            "cuisine_type": row.get("cuisine_type") or "",
+            "difficulty": row.get("difficulty") or 0,
+            "doc_type": "recipe",
+        }
+        step = max(1, chunk_size - chunk_overlap)
+        chunks = [full_text[i : i + chunk_size] for i in range(0, len(full_text), step)] or [full_text]
+        for idx, chunk in enumerate(chunks):
+            chunk_id = f"{base_meta['node_id']}_{idx}"
+            docs.append(Document(page_content=chunk, metadata={**base_meta, "chunk_id": chunk_id, "parent_id": base_meta["node_id"]}))
+    return docs
 
 
 def _build_system(config: GraphRAGConfig):
-    return build_online_qa_system(config)
-
-
-def _ensure_kb(config: GraphRAGConfig, data_module, index_module):
-    if index_module.has_collection() and index_module.load_collection():
-        data_module.load_graph_data()
-        data_module.build_recipe_documents()
-        chunks = data_module.chunk_documents(config.chunk_size, config.chunk_overlap)
-        return chunks
-
-    data_module.load_graph_data()
-    data_module.build_recipe_documents()
-    chunks = data_module.chunk_documents(config.chunk_size, config.chunk_overlap)
-    index_module.build_vector_index(chunks)
-    return chunks
+    neo4j_tool = Neo4jGraphTool(config)
+    milvus_tool = MilvusVectorTool(config)
+    _ = milvus_tool.load_collection()
+    bm25_docs = _load_bm25_chunks(config)
+    bm25_tool = BM25Tool(bm25_docs)
+    llm_tool = LLMGenerationTool(config)
+    return build_graph(
+        config,
+        bm25_tool=bm25_tool,
+        milvus_tool=milvus_tool,
+        neo4j_tool=neo4j_tool,
+        llm_tool=llm_tool,
+    )
 
 
 def _print_route_summary(state):
@@ -31,11 +106,11 @@ def _print_route_summary(state):
     if not analysis:
         return
     strategy_icons = {
-        "hybrid_traditional": "🔍",
+        "hybrid": "🔍",
         "graph_rag": "🕸️",
         "combined": "🔄",
     }
-    strategy = analysis.recommended_strategy.value
+    strategy = analysis.recommended_strategy
     icon = strategy_icons.get(strategy, "❓")
     print(f"{icon} 使用策略: {strategy}")
     print(f"📊 复杂度: {analysis.query_complexity:.2f}, 关系密集度: {analysis.relationship_intensity:.2f}")
@@ -72,8 +147,7 @@ def _print_metrics(state):
 
 
 def _ask_once(
-    online_graph: OnlineQAGraph,
-    generation_module,
+    online_graph,
     query: str,
     stream: bool,
     verbose: bool,
@@ -81,7 +155,10 @@ def _ask_once(
     session_id: str | None,
 ):
     sid = session_id or str(uuid.uuid4())
-    state = online_graph.invoke(query, stream=stream, session_id=sid)
+    state = online_graph.invoke(
+        {"query": query, "metrics": {"stream": stream}},
+        config={"configurable": {"thread_id": sid}},
+    )
     docs = state.get("docs_final", [])
     if verbose:
         _print_route_summary(state)
@@ -89,11 +166,10 @@ def _ask_once(
         if show_metrics:
             _print_metrics(state)
     if stream:
+        answer = state.get("answer") or ""
         print("回答:")
-        stream_parts = []
-        for chunk in generation_module.generate_adaptive_answer_stream(query, docs):
-            stream_parts.append(chunk)
-            print(chunk, end="", flush=True)
+        for ch in answer:
+            print(ch, end="", flush=True)
         print()
         return
     print("回答:")
@@ -192,7 +268,7 @@ def _choose_session_id(cli_session_id: str) -> str:
         return selected
 
 
-def run_history_mode(system: OnlineQASystem, args, verbose_enabled: bool) -> None:
+def run_history_mode(system, args, verbose_enabled: bool) -> None:
     session_id = _choose_session_id(args.session_id)
     while True:
         q = input("\n请输入您的问题: ").strip()
@@ -201,8 +277,7 @@ def run_history_mode(system: OnlineQASystem, args, verbose_enabled: bool) -> Non
         if q.lower() in {"quit", "exit"}:
             break
         _ask_once(
-            system.online_graph,
-            system.generation_module,
+            system,
             q,
             args.stream,
             verbose_enabled,
@@ -211,13 +286,12 @@ def run_history_mode(system: OnlineQASystem, args, verbose_enabled: bool) -> Non
         )
 
 
-def run_single_mode(system: OnlineQASystem, args, verbose_enabled: bool) -> None:
+def run_single_mode(system, args, verbose_enabled: bool) -> None:
     q = input("\n请输入问题: ").strip()
     if not q:
         return
     _ask_once(
-        system.online_graph,
-        system.generation_module,
+        system,
         q,
         args.stream,
         verbose_enabled,
@@ -249,18 +323,14 @@ def main(argv=None):
     verbose_enabled = True
 
     config = GraphRAGConfig(**{**DEFAULT_CONFIG.to_dict(), "top_k": args.top_k})
-    system = _build_system(config)
-    chunks = _ensure_kb(config, system.data_module, system.index_module)
-    system.traditional_retrieval.initialize(chunks)
-    system.graph_rag_retrieval.initialize()
+    online_graph = _build_system(config)
 
     if args.query:
         effective_session_id = args.session_id
         if effective_session_id == "default" and Config.SESSION_ID:
             effective_session_id = Config.SESSION_ID
         _ask_once(
-            system.online_graph,
-            system.generation_module,
+            online_graph,
             args.query,
             args.stream,
             verbose_enabled,
@@ -278,8 +348,11 @@ def main(argv=None):
         "2": run_single_mode,
     }
     runner = MODES.get(choice, run_history_mode)
-    runner(system, args, verbose_enabled)
+    runner(online_graph, args, verbose_enabled)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(0)

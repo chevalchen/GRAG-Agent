@@ -1,0 +1,26 @@
+[project]
+name = "c9"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite>=0.22.1",
+    "langchain==1.2.12",
+    "langchain-community==0.4.1",
+    "langchain-huggingface==1.2.1",
+    "langchain-neo4j==0.7.0",
+    "langchain-openai==1.1.11",
+    "langgraph==1.1.2",
+    "langsmith==0.7.16",
+    "openai==2.26.0",
+    "pandas>=3.0.1",
+    "pymilvus==2.5.11",
+    "pypdf>=6.8.0",
+    "rank-bm25>=0.2.2",
+    "sentence-transformers==5.2.3",
+    "tiktoken==0.12.0",
+    "torchaudio>=2.10.0",
+    "torchvision>=0.25.0",
+    "unstructured-client>=0.42.10",
+]

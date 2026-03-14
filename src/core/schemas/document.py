@@ -15,9 +15,8 @@ class Document:
 @dataclass
 class QueryAnalysis:
     original_query: str
-    route: str
     keywords: list[str] = field(default_factory=list)
     intent: str = ""
     query_complexity: float = 0.0
     relationship_intensity: float = 0.0
-    recommended_strategy: Any = None
+    recommended_strategy: str = "hybrid"

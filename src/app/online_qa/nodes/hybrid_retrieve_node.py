@@ -1,19 +1,53 @@
-from src.app.online_qa import nodes as online_nodes
+from __future__ import annotations
+
+import concurrent.futures
+from collections.abc import Callable
+
+from langchain_core.documents import Document
+
 from src.app.online_qa.state import OnlineQAState
-from src.core.schemas.document import Document
+from src.core.tools.graph.neo4j_tool import Neo4jGraphTool
+from src.core.tools.retrieval.bm25_tool import BM25Tool
+from src.core.tools.vector.milvus_tool import MilvusVectorTool
 
 
-def hybrid_retrieve_node(state: OnlineQAState) -> dict:
-    if online_nodes.RUNTIME is None:
-        return {"error": "runtime_not_initialized"}
-    query = state.get("query", "")
-    docs = online_nodes.RUNTIME.hybrid_tool.search(query, online_nodes.RUNTIME.top_k)
-    hybrid_docs = [
-        Document(
-            content=d.page_content,
-            metadata=dict(d.metadata),
-            source="hybrid",
-        )
-        for d in docs
-    ]
-    return {"hybrid_docs": hybrid_docs}
+def make_hybrid_retrieve_node(
+    bm25: BM25Tool,
+    milvus: MilvusVectorTool,
+    neo4j: Neo4jGraphTool,
+    *,
+    top_k: int,
+) -> Callable[[OnlineQAState], dict]:
+    def hybrid_retrieve_node(state: OnlineQAState) -> dict:
+        query = (state.get("query") or "").strip()
+        if not query:
+            return {"hybrid_docs": []}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            f_bm25 = ex.submit(bm25.invoke, {"query": query, "top_k": int(top_k)})
+            f_milvus = ex.submit(milvus.invoke, {"query": query, "top_k": int(top_k), "filter_expr": ""})
+            bm25_docs = f_bm25.result() or []
+            milvus_docs = f_milvus.result() or []
+
+        combined: list[Document] = []
+        for d in bm25_docs:
+            d.metadata = {**(d.metadata or {}), "search_source": "bm25"}
+            combined.append(d)
+        combined.extend(milvus_docs)
+
+        node_ids: list[str] = []
+        for d in milvus_docs:
+            nid = (d.metadata or {}).get("node_id")
+            if nid:
+                node_ids.append(str(nid))
+        node_ids = list(dict.fromkeys(node_ids))[:10]
+        expanded: list[Document] = []
+        for nid in node_ids:
+            expanded.extend(neo4j.invoke({"query": f"node_id:{nid}", "max_depth": 1, "max_nodes": 30}) or [])
+        for d in expanded:
+            d.metadata = {**(d.metadata or {}), "search_source": "neo4j_expand"}
+        combined.extend(expanded)
+
+        return {"hybrid_docs": combined}
+
+    return hybrid_retrieve_node

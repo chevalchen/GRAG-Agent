@@ -5,6 +5,9 @@ from typing import Optional
 
 from langgraph.graph import END, StateGraph
 
+from src.app.config import Config, DEFAULT_CONFIG, GraphRAGConfig
+from src.app.offline_ingestion.nodes.milvus_index_node import make_milvus_index_node
+from src.app.offline_ingestion.nodes.neo4j_write_node import make_neo4j_write_node
 from src.app.offline_ingestion.state import OfflineIngestionState
 from src.app.offline_ingestion.tools.build_tool import GraphRecordBuilderTool
 from src.app.offline_ingestion.tools.export_tool import ExporterTool
@@ -33,6 +36,9 @@ class OfflineIngestionGraph:
         self._build_tool: Optional[GraphRecordBuilderTool] = None
         self._export_tool: Optional[ExporterTool] = None
         self._progress_tool: Optional[ProgressStoreTool] = None
+        self._neo4j_write_node = None
+        self._milvus_index_node = None
+        self._rag_config: GraphRAGConfig | None = None
         self._graph = self._build()
 
     def _build(self):
@@ -42,6 +48,8 @@ class OfflineIngestionGraph:
         g.add_node("parse_batch", self._parse_batch)
         g.add_node("flush", self._flush)
         g.add_node("finalize", self._finalize)
+        g.add_node("neo4j_write", self._neo4j_write)
+        g.add_node("milvus_index", self._milvus_index)
         g.add_node("export", self._export)
 
         g.set_entry_point("init")
@@ -49,7 +57,9 @@ class OfflineIngestionGraph:
         g.add_edge("scan", "parse_batch")
         g.add_conditional_edges("parse_batch", self._after_parse, {"continue": "parse_batch", "flush": "flush", "finalize": "finalize"})
         g.add_conditional_edges("flush", self._after_flush, {"continue": "parse_batch", "finalize": "finalize"})
-        g.add_edge("finalize", "export")
+        g.add_edge("finalize", "neo4j_write")
+        g.add_edge("neo4j_write", "milvus_index")
+        g.add_edge("milvus_index", "export")
         g.add_edge("export", END)
         return g.compile()
 
@@ -65,6 +75,8 @@ class OfflineIngestionGraph:
             "processed": 0,
             "failed": 0,
             "current_batch_count": 0,
+            "indexed_count": 0,
+            "failed_writes": [],
             "metrics": {},
             "error": None,
         }
@@ -93,6 +105,20 @@ class OfflineIngestionGraph:
         self._build_tool = GraphRecordBuilderTool(builder)
         self._export_tool = ExporterTool(builder)
         self._progress_tool = ProgressStoreTool(builder)
+        self._rag_config = GraphRAGConfig(
+            **{
+                **DEFAULT_CONFIG.to_dict(),
+                "neo4j_uri": Config.NEO4J_URI,
+                "neo4j_user": Config.NEO4J_USER,
+                "neo4j_password": Config.NEO4J_PASSWORD,
+                "neo4j_database": Config.NEO4J_DATABASE,
+                "milvus_host": Config.MILVUS_HOST,
+                "milvus_port": Config.MILVUS_PORT,
+                "milvus_collection_name": Config.MILVUS_COLLECTION_NAME,
+            }
+        )
+        self._neo4j_write_node = make_neo4j_write_node(self._rag_config, builder=self._builder)
+        self._milvus_index_node = make_milvus_index_node(self._rag_config)
         return {}
 
     def _scan(self, state: OfflineIngestionState):
@@ -216,3 +242,13 @@ class OfflineIngestionGraph:
         start = time.time()
         self._export_tool.export_csv([], state["output_dir"], state["output_format"])
         return {"metrics": {**state["metrics"], "export_seconds": time.time() - start, "exported": True}}
+
+    def _neo4j_write(self, state: OfflineIngestionState):
+        if self._neo4j_write_node is None:
+            return {}
+        return self._neo4j_write_node(state)
+
+    def _milvus_index(self, state: OfflineIngestionState):
+        if self._milvus_index_node is None:
+            return {}
+        return self._milvus_index_node(state)

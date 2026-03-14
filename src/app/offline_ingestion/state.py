@@ -1,7 +1,7 @@
 from typing import Any, Dict, List, Optional, TypedDict
 
 
-class OfflineIngestionState(TypedDict):
+class OfflineIngestionState(TypedDict, total=False):
     recipe_dir: str
     output_dir: str
     output_format: str
@@ -12,5 +12,7 @@ class OfflineIngestionState(TypedDict):
     processed: int
     failed: int
     current_batch_count: int
+    indexed_count: int
+    failed_writes: List[Dict[str, Any]]
     metrics: Dict[str, Any]
     error: Optional[str]

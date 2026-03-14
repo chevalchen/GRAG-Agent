@@ -1,46 +1,55 @@
 from __future__ import annotations
 
-from src.core.schemas.document import Document
-from src.core.tools.llm.llm_client import LLMClient
+from collections.abc import Iterator
+
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import BaseTool
+from openai import RateLimitError
+from pydantic import BaseModel, Field
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
+
+from src.app.config import GraphRAGConfig
 
 
-class GenerationTool:
-    def __init__(self, llm_client: LLMClient):
-        self._llm_client = llm_client
+class _LLMGenerationToolInput(BaseModel):
+    prompt: str = Field(..., description="生成任务提示词")
 
-    def generate(
-        self,
-        query: str,
-        docs: list[Document],
-        stream: bool = False,
-        history: list[dict] | None = None,
-    ) -> str | None:
-        context = "\n\n".join(d.content for d in docs[:10])
-        history_prefix = ""
-        if history:
-            recent = history[-10:]
-            lines: list[str] = []
-            for item in recent:
-                if not isinstance(item, dict):
-                    continue
-                role = item.get("role")
-                content = item.get("content")
-                if not content:
-                    continue
-                if role == "user":
-                    prefix = "用户"
-                elif role == "assistant":
-                    prefix = "助手"
-                else:
-                    prefix = str(role) if role else "未知"
-                lines.append(f"{prefix}: {content}")
-            if lines:
-                history_prefix = "对话历史（最近几轮）：\n" + "\n".join(lines) + "\n\n"
-        prompt = f"{history_prefix}请基于下列资料回答问题。\n\n资料:\n{context}\n\n问题:{query}\n\n回答:"
-        messages = [{"role": "user", "content": prompt}]
-        if not stream:
-            return self._llm_client.chat(messages, stream=False)
-        parts = []
-        for chunk in self._llm_client.chat(messages, stream=True):
-            parts.append(chunk)
-        return "".join(parts)
+
+class LLMGenerationTool(BaseTool):
+    name: str = "llm_generate"
+    description: str = "使用 ChatOpenAI 生成文本，支持重试与流式输出"
+    args_schema: type[BaseModel] = _LLMGenerationToolInput
+
+    def __init__(self, config: GraphRAGConfig):
+        super().__init__()
+        from langchain_openai import ChatOpenAI
+        from src.utils import env_utils
+
+        api_key = env_utils.MOONSHOT_API_KEY or env_utils.KIMI_API_KEY or env_utils.OPENAI_API_KEY
+        base_url = env_utils.MOONSHOT_BASE_URL
+        self._llm = ChatOpenAI(
+            model=config.llm_model,
+            api_key=api_key,
+            base_url=base_url,
+            temperature=float(config.temperature),
+            max_tokens=int(config.max_tokens),
+        )
+
+    def _run(self, prompt: str) -> str:
+        return self.invoke_text(prompt)
+
+    @retry(
+        retry=retry_if_exception_type(RateLimitError),
+        wait=wait_exponential_jitter(initial=1, max=20),
+        stop=stop_after_attempt(5),
+        reraise=True,
+    )
+    def invoke_text(self, prompt: str) -> str:
+        msg = self._llm.invoke([HumanMessage(content=prompt)])
+        return getattr(msg, "content", "") or ""
+
+    def stream_text(self, prompt: str) -> Iterator[str]:
+        for chunk in self._llm.stream([HumanMessage(content=prompt)]):
+            text = getattr(chunk, "content", None)
+            if text:
+                yield text

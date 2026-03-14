@@ -27,6 +27,8 @@ class GraphRAGConfig:
     chunk_size: int = 500
     chunk_overlap: int = 50
     max_graph_depth: int = 2
+    history_window: int = 10
+    enable_long_term_write: bool = False
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "GraphRAGConfig":
@@ -50,6 +52,8 @@ class GraphRAGConfig:
             "chunk_size": self.chunk_size,
             "chunk_overlap": self.chunk_overlap,
             "max_graph_depth": self.max_graph_depth,
+            "history_window": self.history_window,
+            "enable_long_term_write": self.enable_long_term_write,
         }
 
 
