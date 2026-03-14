@@ -6,6 +6,7 @@ from openai import OpenAI
 
 
 class LLMClient:
+    """OpenAI LLM 客户端"""
     def __init__(self, api_key: str, base_url: str, model: str):
         self._model = model
         self._client = OpenAI(api_key=api_key, base_url=base_url)

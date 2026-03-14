@@ -7,7 +7,25 @@ from src.core.tools.graph.neo4j_tool import Neo4jGraphTool
 
 
 def make_graph_retrieve_node(neo4j: Neo4jGraphTool, *, top_k: int) -> Callable[[OnlineQAState], dict]:
+    """
+    构建图检索节点
+    
+    Args:
+        neo4j: Neo4j 图工具
+        top_k: 检索文档数量
+    Returns:
+        图检索节点
+    """
     def graph_retrieve_node(state: OnlineQAState) -> dict:
+        """
+        图检索节点
+        
+        Args:
+            state: 在线问答状态
+            
+        Returns:
+            图检索结果
+        """
         analysis = state.get("analysis")
         keywords: list[str] = []
         relationship_intensity = 0.0

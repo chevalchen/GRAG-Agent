@@ -12,19 +12,22 @@ from src.app.config import GraphRAGConfig
 
 
 class _Neo4jGraphToolInput(BaseModel):
+    """Neo4j 图工具输入"""
     query: str = Field(..., description="自然语言查询或 node_id:<id> 形式的节点扩展请求")
     max_depth: int = Field(2, ge=1, le=4)
     max_nodes: int = Field(50, ge=1, le=500)
 
 
 @lru_cache(maxsize=8)
-def _get_graph(uri: str, user: str, password: str, database: str):
-    from langchain_community.graphs import Neo4jGraph
+def _get_graph(uri: str, user: str, password: str, database: str) -> Neo4jGraph:
+    """获取 Neo4j 图数据库连接"""
+    from langchain_neo4j import Neo4jGraph
 
     return Neo4jGraph(url=uri, username=user, password=password, database=database)
 
 
 def _infer_mode(query: str) -> Literal["subgraph", "multi_hop", "entity_relation"]:
+    """根据查询推断检索模式"""
     q = query.strip()
     if any(x in q for x in ["路径", "怎么到", "如何到", "连到", "多跳"]):
         return "multi_hop"
@@ -34,6 +37,7 @@ def _infer_mode(query: str) -> Literal["subgraph", "multi_hop", "entity_relation
 
 
 def _extract_entities(query: str) -> tuple[str | None, str | None]:
+    """从查询中提取实体"""
     q = query.strip()
     q = re.sub(r"\s+", "", q)
     if "到" in q:
@@ -46,6 +50,7 @@ def _extract_entities(query: str) -> tuple[str | None, str | None]:
 
 
 class Neo4jGraphTool(BaseTool):
+    """Neo4j 图工具"""
     name: str = "neo4j_search"
     description: str = "在 Neo4j 中做子图/多跳/实体关系检索，返回 LangChain Documents"
     args_schema: type[BaseModel] = _Neo4jGraphToolInput
@@ -92,8 +97,8 @@ class Neo4jGraphTool(BaseTool):
                type(r) AS rel_type,
                m.nodeId AS target_id,
                coalesce(m.conceptType, head(labels(m))) AS target_type,
-               coalesce(n.name, n.title, "") AS source_name,
-               coalesce(m.name, m.title, "") AS target_name
+               coalesce(n.name, n.description, "") AS source_name,
+               coalesce(m.name, m.description, "") AS target_name
         LIMIT $limit
         """
         rows = self._graph.query(cypher, {"node_id": node_id, "limit": int(max_nodes)})
@@ -115,11 +120,18 @@ class Neo4jGraphTool(BaseTool):
 
     def _subgraph_keywords(self, keywords: str, max_depth: int, max_nodes: int) -> list[Document]:
         cypher = """
-        MATCH (r:Concept {conceptType: "Recipe"})
-        WHERE r.name CONTAINS $kw OR coalesce(r.description, "") CONTAINS $kw OR coalesce(r.preferredTerm, "") CONTAINS $kw
+        MATCH (r)
+        WHERE coalesce(r.conceptType, head(labels(r)), "") = "Recipe"
+          AND (
+            r.name CONTAINS $kw
+            OR coalesce(r.description, "") CONTAINS $kw
+            OR coalesce(r.preferredTerm, "") CONTAINS $kw
+          )
         WITH r
-        OPTIONAL MATCH (r)-[]->(i:Concept {conceptType: "Ingredient"})
-        OPTIONAL MATCH (r)-[]->(s:Concept {conceptType: "CookingStep"})
+        OPTIONAL MATCH (r)-[]->(i)
+        WHERE coalesce(i.conceptType, head(labels(i)), "") = "Ingredient"
+        OPTIONAL MATCH (r)-[]->(s)
+        WHERE coalesce(s.conceptType, head(labels(s)), "") = "CookingStep"
         WITH r, collect(DISTINCT i.name)[..30] AS ingredients, collect(DISTINCT s.description)[..30] AS steps
         RETURN r.nodeId AS node_id,
                r.name AS recipe_name,
@@ -166,11 +178,11 @@ class Neo4jGraphTool(BaseTool):
 
     def _entity_relation(self, a: str, b: str, max_nodes: int) -> list[Document]:
         cypher = """
-        MATCH (x) WHERE coalesce(x.name, x.title, "") CONTAINS $a
-        MATCH (y) WHERE coalesce(y.name, y.title, "") CONTAINS $b
+        MATCH (x) WHERE coalesce(x.name, x.description, "") CONTAINS $a
+        MATCH (y) WHERE coalesce(y.name, y.description, "") CONTAINS $b
         WITH x, y
         MATCH p=(x)-[r*1..2]-(y)
-        RETURN [n IN nodes(p) | {id: n.nodeId, node_type: coalesce(n.conceptType, head(labels(n))), name: coalesce(n.name, n.title, "")}] AS ns,
+        RETURN [n IN nodes(p) | {id: n.nodeId, node_type: coalesce(n.conceptType, head(labels(n))), name: coalesce(n.name, n.description, "")}] AS ns,
                [rel IN relationships(p) | type(rel)] AS rs,
                length(p) AS path_length
         LIMIT $limit
@@ -199,11 +211,11 @@ class Neo4jGraphTool(BaseTool):
 
     def _multi_hop(self, a: str, b: str, max_depth: int, max_nodes: int) -> list[Document]:
         cypher = """
-        MATCH (x) WHERE coalesce(x.name, x.title, "") CONTAINS $a
-        MATCH (y) WHERE coalesce(y.name, y.title, "") CONTAINS $b
+        MATCH (x) WHERE coalesce(x.name, x.description, "") CONTAINS $a
+        MATCH (y) WHERE coalesce(y.name, y.description, "") CONTAINS $b
         WITH x, y
         MATCH p=(x)-[r*1..$depth]-(y)
-        RETURN [n IN nodes(p) | {id: n.nodeId, node_type: coalesce(n.conceptType, head(labels(n))), name: coalesce(n.name, n.title, "")}] AS ns,
+        RETURN [n IN nodes(p) | {id: n.nodeId, node_type: coalesce(n.conceptType, head(labels(n))), name: coalesce(n.name, n.description, "")}] AS ns,
                length(p) AS path_length
         ORDER BY length(p) ASC
         LIMIT $limit

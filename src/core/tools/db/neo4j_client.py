@@ -4,6 +4,16 @@ from typing import Any
 
 
 class Neo4jClient:
+    """
+    Neo4j 客户端
+    
+    Attributes:
+        uri: Neo4j URI
+        user: Neo4j 用户名
+        password: Neo4j 密码
+        database: Neo4j 数据库
+        driver: Neo4j 驱动
+    """
     def __init__(self, uri: str, user: str, password: str, database: str):
         self._uri = uri
         self._user = user

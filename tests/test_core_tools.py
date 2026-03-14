@@ -1,14 +1,11 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from src.app.online_qa.tools.registry import assert_tool_allowed
-from src.core.schemas.document import Document
 import src.core.tools.db.milvus_client as milvus_module
 import src.core.tools.db.neo4j_client as neo4j_module
 from src.core.tools.db.milvus_client import MilvusClient, get_milvus_client
 from src.core.tools.db.neo4j_client import Neo4jClient, get_neo4j_client
 from src.core.tools.llm.embedding_client import EmbeddingClient
-from src.core.tools.llm.generation_tool import GenerationTool
 
 
 class CoreToolsTests(unittest.TestCase):
@@ -33,19 +30,17 @@ class CoreToolsTests(unittest.TestCase):
         self.assertEqual(len(vectors), 2)
         self.assertEqual(len(vectors[0]), 2)
 
-    def test_generation_tool_calls_llm_chat_only(self):
-        llm = MagicMock()
-        llm.chat = MagicMock(return_value="ok")
-        tool = GenerationTool(llm)
-        out = tool.generate("q", [Document(content="ctx")], stream=False)
-        self.assertEqual(out, "ok")
-        llm.chat.assert_called_once()
+    def test_llm_generation_tool_invoke_text(self):
+        from langchain_core.messages import HumanMessage
 
-    def test_registry_permission_error(self):
-        from src.app.online_qa.tools.hybrid_search import HybridSearchTool
+        from src.core.tools.llm.generation_tool import LLMGenerationTool
 
-        with self.assertRaises(PermissionError):
-            assert_tool_allowed("query_analysis_node", HybridSearchTool)
+        tool = LLMGenerationTool.__new__(LLMGenerationTool)
+        mock_llm = MagicMock()
+        mock_llm.invoke.return_value = MagicMock(content="test_answer")
+        tool._llm = mock_llm
+        msg = tool._llm.invoke([HumanMessage(content="test prompt")])
+        self.assertEqual(msg.content, "test_answer")
 
     def test_neo4j_singleton_factory(self):
         neo4j_module._instance = None

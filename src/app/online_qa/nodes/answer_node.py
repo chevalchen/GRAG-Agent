@@ -8,6 +8,16 @@ from src.core.tools.llm.generation_tool import LLMGenerationTool
 
 
 def make_answer_node(llm: LLMGenerationTool, *, history_window: int) -> Callable[[OnlineQAState], dict]:
+    """
+    构建回答节点
+    
+    Args:
+        llm: LLM 生成工具
+        history_window: 历史对话窗口大小
+        
+    Returns:
+        回答节点
+    """
     def answer_node(state: OnlineQAState) -> dict:
         t0 = time.time()
         analysis = state.get("analysis")

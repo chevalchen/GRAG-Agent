@@ -9,6 +9,15 @@ from src.core.tools.llm.generation_tool import LLMGenerationTool
 
 
 def _extract_json(text: str) -> dict:
+    """
+    从文本中提取 JSON 字符串
+    
+    Args:
+        text: 输入文本
+        
+    Returns:
+        提取到的 JSON 字典
+    """
     t = (text or "").strip()
     if not t:
         return {}
@@ -23,7 +32,24 @@ def _extract_json(text: str) -> dict:
 
 
 def make_supervisor_node(llm: LLMGenerationTool) -> Callable[[OnlineQAState], dict]:
+    """
+    构建监督节点
+    
+    Args:
+        llm: LLM 生成工具
+    Returns:
+        监督节点
+    """
     def supervisor_node(state: OnlineQAState) -> dict:
+        """
+        监督节点
+        
+        Args:
+            state: 在线问答状态
+            
+        Returns:
+            分析结果
+        """
         query = (state.get("query") or "").strip()
         if not query:
             return {"analysis": QueryAnalysis(original_query="", recommended_strategy="hybrid")}

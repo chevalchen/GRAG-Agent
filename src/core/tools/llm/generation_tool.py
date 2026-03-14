@@ -12,10 +12,12 @@ from src.app.config import GraphRAGConfig
 
 
 class _LLMGenerationToolInput(BaseModel):
+    """LLM 生成工具输入"""
     prompt: str = Field(..., description="生成任务提示词")
 
 
 class LLMGenerationTool(BaseTool):
+    """LLM 生成工具"""
     name: str = "llm_generate"
     description: str = "使用 ChatOpenAI 生成文本，支持重试与流式输出"
     args_schema: type[BaseModel] = _LLMGenerationToolInput

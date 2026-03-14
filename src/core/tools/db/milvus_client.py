@@ -2,6 +2,15 @@ from __future__ import annotations
 
 
 class MilvusClient:
+    """
+    Milvus 客户端
+    
+    Attributes:
+        host: Milvus 主机
+        port: Milvus 端口
+        collection_name: 集合名称
+        client: Milvus 客户端
+    """
     def __init__(self, host: str, port: int, collection_name: str):
         self._host = host
         self._port = port

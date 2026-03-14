@@ -18,7 +18,27 @@ def make_hybrid_retrieve_node(
     *,
     top_k: int,
 ) -> Callable[[OnlineQAState], dict]:
+    """
+    构建混合检索节点
+    
+    Args:
+        bm25: BM25 检索工具
+        milvus: Milvus 向量工具
+        neo4j: Neo4j 图工具
+        top_k: 检索文档数量
+    Returns:
+        混合检索节点
+    """
     def hybrid_retrieve_node(state: OnlineQAState) -> dict:
+        """
+        混合检索节点
+        
+        Args:
+            state: 在线问答状态
+            
+        Returns:
+            混合检索结果
+        """
         query = (state.get("query") or "").strip()
         if not query:
             return {"hybrid_docs": []}

@@ -17,6 +17,15 @@ from src.core.tools.vector.milvus_tool import MilvusVectorTool
 
 
 def route_condition(state: OnlineQAState) -> list[str] | str:
+    """
+    路由条件
+    
+    Args:
+        state: 在线问答状态
+    
+    Returns:
+        路由目标节点
+    """
     analysis = state.get("analysis")
     strategy = getattr(analysis, "recommended_strategy", "hybrid") if analysis else "hybrid"
     if strategy == "combined":
@@ -32,6 +41,36 @@ def build_graph(
     neo4j_tool: Neo4jGraphTool,
     llm_tool: LLMGenerationTool,
 ):
+    """
+    构建在线问答图
+    
+    Args:
+        config: 图配置
+        bm25_tool: BM25 工具
+        milvus_tool: Milvus 向量工具
+        neo4j_tool: Neo4j 图工具
+        llm_tool: LLM 生成工具
+    
+    Returns:
+        在线问答图
+    
+    Nodes:
+        supervisor: 监督节点
+        hybrid_retrieve: 混合检索节点
+        graph_retrieve: 图检索节点
+        fuse: 融合节点
+        answer: 回答节点
+        
+    Edges:
+        START -> supervisor
+        supervisor -> hybrid_retrieve
+        supervisor -> graph_retrieve
+        hybrid_retrieve -> fuse
+        graph_retrieve -> fuse
+        fuse -> answer
+        answer -> END
+        
+    """
     graph = StateGraph(OnlineQAState)
     graph.add_node("supervisor", make_supervisor_node(llm_tool))
     graph.add_node("hybrid_retrieve", make_hybrid_retrieve_node(bm25_tool, milvus_tool, neo4j_tool, top_k=config.top_k))
