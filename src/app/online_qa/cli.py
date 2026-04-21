@@ -77,7 +77,7 @@ def _print_docs_summary(state, limit: int = 3):
 
 def _print_metrics(state):
     metrics = state.get("metrics") or {}
-    time_keys = ["analyze_seconds", "retrieve_seconds", "fuse_seconds", "generate_seconds"]
+    time_keys = ["analyze_seconds", "retrieve_seconds", "fuse_seconds", "rerank_seconds", "generate_seconds", "total_seconds"]
     count_keys = ["graph_rows", "graph_docs"]
     parts = []
     for k in time_keys:
@@ -278,8 +278,25 @@ def main(argv=None):
             "milvus_port": Config.MILVUS_PORT,
             "milvus_uri": Config.MILVUS_URI,
             "milvus_collection_name": Config.MILVUS_COLLECTION_NAME,
-            "reranker_model": Config.RERANKER_MODEL,
+            "embedding_model": Config.FAST_EMBEDDING_MODEL if Config.FAST_MODE else Config.EMBEDDING_MODEL,
+            "llm_model": Config.FAST_LLM_MODEL if Config.FAST_MODE else Config.LLM_MODEL,
+            "reranker_model": Config.FAST_RERANKER_MODEL if Config.FAST_MODE else Config.RERANKER_MODEL,
             "bm25_top_k": Config.BM25_TOP_K,
+            "retrieval_balance_strategy": Config.RETRIEVAL_BALANCE_STRATEGY,
+            "retrieval_timeout_seconds": Config.RETRIEVAL_TIMEOUT_SECONDS,
+            "retrieve_expand_factor": Config.RETRIEVE_EXPAND_FACTOR,
+            "lit_expand_factor": Config.LIT_EXPAND_FACTOR,
+            "graph_expand_factor": Config.GRAPH_EXPAND_FACTOR,
+            "max_retrieval_top_k": Config.MAX_RETRIEVAL_TOP_K,
+            "max_graph_rows": Config.MAX_GRAPH_ROWS,
+            "graph_fallback_max_nodes": Config.GRAPH_FALLBACK_MAX_NODES,
+            "rerank_simple_skip_threshold": Config.RERANK_SIMPLE_SKIP_THRESHOLD,
+            "rerank_simple_candidate_limit": Config.RERANK_SIMPLE_CANDIDATE_LIMIT,
+            "rerank_complex_candidate_limit": Config.RERANK_COMPLEX_CANDIDATE_LIMIT,
+            "simple_context_budget_chars": Config.SIMPLE_CONTEXT_BUDGET_CHARS,
+            "complex_context_budget_chars": Config.COMPLEX_CONTEXT_BUDGET_CHARS,
+            "simple_per_doc_chars": Config.SIMPLE_PER_DOC_CHARS,
+            "complex_per_doc_chars": Config.COMPLEX_PER_DOC_CHARS,
             "checkpointer_path": Config.CHECKPOINTER_PATH,
         }
     )

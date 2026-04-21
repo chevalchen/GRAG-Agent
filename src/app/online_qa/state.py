@@ -8,6 +8,7 @@ from typing_extensions import TypedDict
 
 class RoutingSignal(TypedDict):
     query_intent: str
+    complexity_level: str
     use_graph: bool
     use_drug_vec: bool
     use_lit_vec: bool
@@ -15,6 +16,14 @@ class RoutingSignal(TypedDict):
     source_hint: list[str]
     keywords: list[str]
     reason: str
+
+
+class ResolvedDrug(TypedDict, total=False):
+    canonical_name: str
+    normalized_name: str
+    node_id: str
+    matched_alias: str
+    match_type: str
 
 
 class OnlineQAState(TypedDict, total=False):
@@ -34,6 +43,7 @@ class OnlineQAState(TypedDict, total=False):
     """
     query: str
     routing: RoutingSignal | None
+    resolved_drug: ResolvedDrug | None
     graph_docs: list[Document]
     drug_docs: list[Document]
     lit_docs: list[Document]
@@ -41,7 +51,7 @@ class OnlineQAState(TypedDict, total=False):
     docs_rrf: list[Document]
     docs_final: list[Document]
     top_k: int
-    metrics: dict
+    metrics: Annotated[dict, operator.or_]
     answer: str
     history: Annotated[list[dict], operator.add]
     error: str | None

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import time
 from collections.abc import Callable
 
@@ -27,13 +26,16 @@ def make_milvus_index_node(config: GraphRAGConfig) -> Callable[[OfflineIngestion
         docs: list[Document] = []
 
         for row in parsed_records:
-            drug_name = str(row.get("drug_name") or "").strip()
-            if not drug_name:
+            canonical_name = str(row.get("canonical_name") or row.get("drug_name") or "").strip()
+            if not canonical_name:
                 continue
             ingredients = [str(x).strip() for x in (row.get("ingredients") or []) if str(x).strip()]
             merged_ingredients = "、".join(ingredients)
-            text = f"药品{drug_name}，含有成分：{merged_ingredients}"
-            chunk_id = f"drug_{hashlib.md5(drug_name.encode('utf-8')).hexdigest()[:12]}"
+            node_id = str(row.get("node_id") or "").strip()
+            if not node_id:
+                continue
+            text = f"药品{canonical_name}，含有成分：{merged_ingredients}"
+            chunk_id = f"{node_id}_profile"
             docs.append(
                 Document(
                     page_content=text,
@@ -41,9 +43,13 @@ def make_milvus_index_node(config: GraphRAGConfig) -> Callable[[OfflineIngestion
                         "doc_type": "drug",
                         "chunk_type": "profile",
                         "source": "medical_ner_entities",
-                        "drug_name": drug_name,
+                        "drug_name": canonical_name,
+                        "canonical_name": canonical_name,
+                        "normalized_name": str(row.get("normalized_name") or "").strip(),
+                        "aliases": list(row.get("aliases") or []),
+                        "alias_norms": list(row.get("alias_norms") or []),
                         "answer": "",
-                        "node_id": chunk_id,
+                        "node_id": node_id,
                         "chunk_id": chunk_id,
                     },
                 )

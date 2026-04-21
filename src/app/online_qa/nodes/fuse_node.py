@@ -79,7 +79,19 @@ def make_fuse_node(*, top_k: int) -> Callable[[OnlineQAState], dict]:
             docs_rrf = non_empty[0][: int(top_k * 3)]
         else:
             docs_rrf = _rrf(all_lists, k=60, top_k=int(top_k * 3))
-        metrics = {**(state.get("metrics") or {}), "fuse_seconds": time.time() - t0, "fuse_ready": True}
+        prev_metrics = state.get("metrics") or {}
+        retrieve_seconds = (
+            float(prev_metrics.get("graph_retrieve_seconds", 0.0))
+            + float(prev_metrics.get("drug_retrieve_seconds", 0.0))
+            + float(prev_metrics.get("lit_retrieve_seconds", 0.0))
+            + float(prev_metrics.get("health_retrieve_seconds", 0.0))
+        )
+        metrics = {
+            **prev_metrics,
+            "retrieve_seconds": retrieve_seconds,
+            "fuse_seconds": time.time() - t0,
+            "fuse_ready": True,
+        }
         return {"docs_rrf": docs_rrf, "metrics": metrics}
 
     return fuse_node

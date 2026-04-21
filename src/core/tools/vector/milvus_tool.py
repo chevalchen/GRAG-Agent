@@ -10,6 +10,14 @@ from pydantic import BaseModel, Field
 from src.app.config import GraphRAGConfig
 
 
+def _join_text_list(values: Any) -> str:
+    if isinstance(values, str):
+        return values
+    if not isinstance(values, list):
+        return ""
+    return " | ".join([str(x).strip() for x in values if str(x).strip()])
+
+
 class _MilvusVectorToolInput(BaseModel):
     query: str
     top_k: int = Field(10, ge=1, le=100)
@@ -111,6 +119,10 @@ class MilvusVectorTool(BaseTool):
                     "chunk_type",
                     "source",
                     "drug_name",
+                    "canonical_name",
+                    "normalized_name",
+                    "aliases_text",
+                    "alias_norms_text",
                     "answer",
                     "node_id",
                     "chunk_id",
@@ -176,6 +188,10 @@ class MilvusVectorTool(BaseTool):
             FieldSchema(name="chunk_type", dtype=DataType.VARCHAR, max_length=50),
             FieldSchema(name="source", dtype=DataType.VARCHAR, max_length=200),
             FieldSchema(name="drug_name", dtype=DataType.VARCHAR, max_length=300),
+            FieldSchema(name="canonical_name", dtype=DataType.VARCHAR, max_length=300),
+            FieldSchema(name="normalized_name", dtype=DataType.VARCHAR, max_length=300),
+            FieldSchema(name="aliases_text", dtype=DataType.VARCHAR, max_length=2000),
+            FieldSchema(name="alias_norms_text", dtype=DataType.VARCHAR, max_length=2000),
             FieldSchema(name="answer", dtype=DataType.VARCHAR, max_length=15000),
             FieldSchema(name="node_id", dtype=DataType.VARCHAR, max_length=100),
             FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=150),
@@ -221,6 +237,10 @@ class MilvusVectorTool(BaseTool):
                     "chunk_type": str(md.get("chunk_type") or "")[:50],
                     "source": str(md.get("source") or "")[:200],
                     "drug_name": str(md.get("drug_name") or "")[:300],
+                    "canonical_name": str(md.get("canonical_name") or md.get("drug_name") or "")[:300],
+                    "normalized_name": str(md.get("normalized_name") or "")[:300],
+                    "aliases_text": _join_text_list(md.get("aliases"))[:2000],
+                    "alias_norms_text": _join_text_list(md.get("alias_norms"))[:2000],
                     "answer": str(md.get("answer") or "")[:15000],
                     "node_id": str(md.get("node_id") or "")[:100],
                     "chunk_id": chunk_id[:150],

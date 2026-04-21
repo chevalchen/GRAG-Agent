@@ -1,10 +1,39 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Callable
 
 from src.app.online_qa.state import OnlineQAState
 from src.core.tools.llm.generation_tool import LLMGenerationTool
+
+
+def _classify_complexity(query: str, query_intent: str, keywords: list[str]) -> str:
+    text = (query or "").strip()
+    kw_count = len([k for k in keywords if str(k).strip()])
+    complex_markers = [
+        "并且",
+        "同时",
+        "以及",
+        "分别",
+        "区别",
+        "对比",
+        "联合",
+        "搭配",
+        "方案",
+        "病例",
+        "为什么",
+        "怎么",
+        "如何",
+    ]
+    marker_hit = any(m in text for m in complex_markers)
+    if query_intent in {"clinical_case", "health_advice"}:
+        return "complex"
+    if marker_hit or kw_count >= 4 or len(text) >= 26:
+        return "complex"
+    if query_intent == "drug_specific" and kw_count <= 3 and len(text) <= 22:
+        return "simple"
+    return "complex" if query_intent == "symptom_disease" else "simple"
 
 
 def _extract_json(text: str) -> dict:
@@ -49,11 +78,13 @@ def make_supervisor_node(llm: LLMGenerationTool) -> Callable[[OnlineQAState], di
         Returns:
             分析结果
         """
+        t0 = time.time()
         query = (state.get("query") or "").strip()
         if not query:
             return {
                 "routing": {
                     "query_intent": "tcm_theory",
+                    "complexity_level": "simple",
                     "use_graph": False,
                     "use_drug_vec": False,
                     "use_lit_vec": True,
@@ -61,7 +92,13 @@ def make_supervisor_node(llm: LLMGenerationTool) -> Callable[[OnlineQAState], di
                     "source_hint": [],
                     "keywords": [],
                     "reason": "empty_query",
-                }
+                },
+                "metrics": {
+                    **(state.get("metrics") or {}),
+                    "pipeline_started_at": (state.get("metrics") or {}).get("pipeline_started_at", t0),
+                    "analyze_seconds": time.time() - t0,
+                    "query_complexity": "simple",
+                },
             }
 
         prompt = "\n".join(
@@ -84,7 +121,8 @@ def make_supervisor_node(llm: LLMGenerationTool) -> Callable[[OnlineQAState], di
         except Exception:
             raw = ""
         payload = _extract_json(raw)
-        query_intent = str(payload.get("query_intent") or "").strip()
+        raw_query_intent = str(payload.get("query_intent") or "").strip()
+        query_intent = raw_query_intent
         keywords = payload.get("keywords") or []
         source_hint = payload.get("source_hint") or []
         if not isinstance(keywords, list):
@@ -94,7 +132,8 @@ def make_supervisor_node(llm: LLMGenerationTool) -> Callable[[OnlineQAState], di
         keywords = [str(x).strip() for x in keywords if str(x).strip()]
         source_hint = [str(x).strip() for x in source_hint if str(x).strip()]
         valid_intent = {"drug_specific", "symptom_disease", "tcm_theory", "clinical_case", "health_advice"}
-        if query_intent not in valid_intent:
+        invalid_intent = query_intent not in valid_intent
+        if invalid_intent:
             query_intent = "tcm_theory"
 
         route_by_intent = {
@@ -105,15 +144,24 @@ def make_supervisor_node(llm: LLMGenerationTool) -> Callable[[OnlineQAState], di
             "health_advice": {"use_graph": False, "use_drug_vec": False, "use_lit_vec": True, "use_health_vec": True},
         }
         defaults = route_by_intent[query_intent]
-        use_graph = bool(payload.get("use_graph", defaults["use_graph"]))
-        use_drug_vec = bool(payload.get("use_drug_vec", defaults["use_drug_vec"]))
-        use_lit_vec = bool(payload.get("use_lit_vec", defaults["use_lit_vec"]))
-        use_health_vec = bool(payload.get("use_health_vec", defaults["use_health_vec"]))
+        # When intent is invalid and falls back, enforce deterministic route defaults.
+        if invalid_intent:
+            use_graph = defaults["use_graph"]
+            use_drug_vec = defaults["use_drug_vec"]
+            use_lit_vec = defaults["use_lit_vec"]
+            use_health_vec = defaults["use_health_vec"]
+        else:
+            use_graph = bool(payload.get("use_graph", defaults["use_graph"]))
+            use_drug_vec = bool(payload.get("use_drug_vec", defaults["use_drug_vec"]))
+            use_lit_vec = bool(payload.get("use_lit_vec", defaults["use_lit_vec"]))
+            use_health_vec = bool(payload.get("use_health_vec", defaults["use_health_vec"]))
         reason = str(payload.get("reason") or f"intent={query_intent}")
+        complexity_level = _classify_complexity(query, query_intent, keywords)
 
         return {
             "routing": {
                 "query_intent": query_intent,
+                "complexity_level": complexity_level,
                 "use_graph": use_graph,
                 "use_drug_vec": use_drug_vec,
                 "use_lit_vec": use_lit_vec,
@@ -121,7 +169,13 @@ def make_supervisor_node(llm: LLMGenerationTool) -> Callable[[OnlineQAState], di
                 "source_hint": source_hint,
                 "keywords": keywords,
                 "reason": reason,
-            }
+            },
+            "metrics": {
+                **(state.get("metrics") or {}),
+                "pipeline_started_at": (state.get("metrics") or {}).get("pipeline_started_at", t0),
+                "analyze_seconds": time.time() - t0,
+                "query_complexity": complexity_level,
+            },
         }
 
     return supervisor_node

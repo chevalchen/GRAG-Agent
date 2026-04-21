@@ -1,0 +1,96 @@
+{
+  "samples": 6,
+  "mean_seconds": 6.081712643305461,
+  "p50_seconds": 5.506818056106567,
+  "p95_seconds": 8.71459412574768,
+  "p95_target_seconds": 6.0,
+  "bottleneck_distribution": {
+    "analyze": 6
+  },
+  "records": [
+    {
+      "query": "乌鸡白凤丸的适应症是什么？",
+      "total_seconds": 8.71459412574768,
+      "complexity": "complex",
+      "rerank_mode": "skipped",
+      "stages": {
+        "analyze": 8.686835527420044,
+        "retrieve": 0.01199960708618164,
+        "fuse": 0.0,
+        "rerank": 0.0,
+        "generate": 0.0
+      },
+      "bottleneck_stage": "analyze"
+    },
+    {
+      "query": "气血不足伴随失眠，应该如何调理？",
+      "total_seconds": 7.3822033405303955,
+      "complexity": "complex",
+      "rerank_mode": "skipped",
+      "stages": {
+        "analyze": 7.358731508255005,
+        "retrieve": 0.013067960739135742,
+        "fuse": 0.0,
+        "rerank": 0.0,
+        "generate": 0.0
+      },
+      "bottleneck_stage": "analyze"
+    },
+    {
+      "query": "四君子汤和六君子汤有什么区别？",
+      "total_seconds": 5.5733091831207275,
+      "complexity": "complex",
+      "rerank_mode": "skipped",
+      "stages": {
+        "analyze": 5.542828559875488,
+        "retrieve": 0.011531591415405273,
+        "fuse": 0.0,
+        "rerank": 0.0,
+        "generate": 0.0
+      },
+      "bottleneck_stage": "analyze"
+    },
+    {
+      "query": "感冒后咳嗽并且喉咙痛，饮食上要注意什么？",
+      "total_seconds": 5.506818056106567,
+      "complexity": "complex",
+      "rerank_mode": "skipped",
+      "stages": {
+        "analyze": 5.50368857383728,
+        "retrieve": 0.0,
+        "fuse": 0.0,
+        "rerank": 0.0,
+        "generate": 0.0
+      },
+      "bottleneck_stage": "analyze"
+    },
+    {
+      "query": "请解释中医里的“肝郁气滞”是什么意思。",
+      "total_seconds": 4.480938196182251,
+      "complexity": "complex",
+      "rerank_mode": "skipped",
+      "stages": {
+        "analyze": 4.475570201873779,
+        "retrieve": 0.0,
+        "fuse": 0.0,
+        "rerank": 0.0,
+        "generate": 0.0
+      },
+      "bottleneck_stage": "analyze"
+    },
+    {
+      "query": "有高血压的人群服用补益类中成药需要注意什么？",
+      "total_seconds": 4.832412958145142,
+      "complexity": "complex",
+      "rerank_mode": "skipped",
+      "stages": {
+        "analyze": 4.829898834228516,
+        "retrieve": 0.0,
+        "fuse": 0.0,
+        "rerank": 0.0,
+        "generate": 0.0
+      },
+      "bottleneck_stage": "analyze"
+    }
+  ]
+}

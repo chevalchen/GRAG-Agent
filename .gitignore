@@ -18,3 +18,5 @@ MedicalRAG0330.md
 *.sst
 *.wal
 *.jsonl
+./test
+./useless_files

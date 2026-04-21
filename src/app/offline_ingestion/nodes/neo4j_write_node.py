@@ -57,11 +57,20 @@ def make_neo4j_write_node(config: GraphRAGConfig) -> Callable[[OfflineIngestionS
         seen_adverse: set[str] = set()
 
         for row in parsed_records:
-            drug_name = str(row.get("drug_name") or "").strip()
-            if not drug_name:
+            canonical_name = str(row.get("canonical_name") or row.get("drug_name") or "").strip()
+            if not canonical_name:
                 continue
-            drug_id = _to_node_id("drug", drug_name)
-            drug_rows.append({"nodeId": drug_id, "name": drug_name})
+            drug_id = str(row.get("node_id") or _to_node_id("drug", canonical_name)).strip()
+            drug_rows.append(
+                {
+                    "nodeId": drug_id,
+                    "name": canonical_name,
+                    "canonicalName": canonical_name,
+                    "normalizedName": str(row.get("normalized_name") or "").strip(),
+                    "aliases": [str(x).strip() for x in (row.get("aliases") or []) if str(x).strip()],
+                    "aliasNorms": [str(x).strip() for x in (row.get("alias_norms") or []) if str(x).strip()],
+                }
+            )
             for ingredient in row.get("ingredients") or []:
                 ingredient_name = str(ingredient or "").strip()
                 if not ingredient_name:
@@ -144,7 +153,11 @@ def make_neo4j_write_node(config: GraphRAGConfig) -> Callable[[OfflineIngestionS
                 UNWIND $rows AS row
                 MERGE (d:Concept {nodeId: row.nodeId})
                 SET d.conceptType = 'Drug',
-                    d.name = row.name
+                    d.name = row.name,
+                    d.canonicalName = row.canonicalName,
+                    d.normalizedName = row.normalizedName,
+                    d.aliases = row.aliases,
+                    d.aliasNorms = row.aliasNorms
                 """,
                 rows=drug_rows,
             )

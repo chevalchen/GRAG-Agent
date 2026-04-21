@@ -7,6 +7,7 @@ from langgraph.graph import END, START, StateGraph
 from src.app.config import GraphRAGConfig
 from src.app.online_qa.checkpointer import get_checkpointer
 from src.app.online_qa.nodes.answer_node import make_answer_node
+from src.app.online_qa.nodes.drug_entity_resolve_node import make_drug_entity_resolve_node
 from src.app.online_qa.nodes.drug_retrieve_node import make_drug_retrieve_node
 from src.app.online_qa.nodes.fuse_node import make_fuse_node
 from src.app.online_qa.nodes.graph_retrieve_node import make_graph_retrieve_node
@@ -83,19 +84,68 @@ def build_graph(
     """
     workflow = StateGraph(OnlineQAState)
     workflow.add_node("supervisor_node", make_supervisor_node(llm_tool))
-    workflow.add_node("graph_retrieve_node", make_graph_retrieve_node(neo4j_tool, top_k=config.top_k))
-    workflow.add_node("drug_retrieve_node", make_drug_retrieve_node(bm25_tool, milvus_tool, top_k=config.top_k))
-    workflow.add_node("lit_retrieve_node", make_lit_retrieve_node(milvus_tool, top_k=config.top_k))
+    workflow.add_node("drug_entity_resolve_node", make_drug_entity_resolve_node(neo4j_tool))
+    workflow.add_node(
+        "graph_retrieve_node",
+        make_graph_retrieve_node(
+            neo4j_tool,
+            top_k=config.top_k,
+            expand_factor=getattr(config, "graph_expand_factor", 3.0),
+            max_graph_rows=getattr(config, "max_graph_rows", 24),
+            graph_fallback_max_nodes=getattr(config, "graph_fallback_max_nodes", 48),
+        ),
+    )
+    workflow.add_node(
+        "drug_retrieve_node",
+        make_drug_retrieve_node(
+            bm25_tool,
+            milvus_tool,
+            top_k=config.top_k,
+            expand_factor=getattr(config, "retrieve_expand_factor", 2.0),
+            max_retrieval_top_k=getattr(config, "max_retrieval_top_k", 12),
+            merge_strategy=getattr(config, "retrieval_balance_strategy", "balanced"),
+            timeout_seconds=getattr(config, "retrieval_timeout_seconds", 1.2),
+        ),
+    )
+    workflow.add_node(
+        "lit_retrieve_node",
+        make_lit_retrieve_node(
+            milvus_tool,
+            top_k=config.top_k,
+            expand_factor=getattr(config, "lit_expand_factor", 1.5),
+            max_retrieval_top_k=getattr(config, "max_retrieval_top_k", 12),
+        ),
+    )
     workflow.add_node("health_retrieve_node", make_health_retrieve_node())
     workflow.add_node("fuse_node", make_fuse_node(top_k=config.top_k))
-    workflow.add_node("rerank_node", make_rerank_node(getattr(config, "reranker_model", "BAAI/bge-reranker-base"), top_k=config.top_k))
-    workflow.add_node("answer_node", make_answer_node(llm_tool, history_window=getattr(config, "history_window", 10)))
+    workflow.add_node(
+        "rerank_node",
+        make_rerank_node(
+            getattr(config, "reranker_model", "BAAI/bge-reranker-base"),
+            top_k=config.top_k,
+            simple_skip_threshold=getattr(config, "rerank_simple_skip_threshold", 6),
+            simple_candidate_limit=getattr(config, "rerank_simple_candidate_limit", 8),
+            complex_candidate_limit=getattr(config, "rerank_complex_candidate_limit", 14),
+        ),
+    )
+    workflow.add_node(
+        "answer_node",
+        make_answer_node(
+            llm_tool,
+            history_window=getattr(config, "history_window", 10),
+            simple_context_budget_chars=getattr(config, "simple_context_budget_chars", 1800),
+            complex_context_budget_chars=getattr(config, "complex_context_budget_chars", 3600),
+            simple_per_doc_chars=getattr(config, "simple_per_doc_chars", 480),
+            complex_per_doc_chars=getattr(config, "complex_per_doc_chars", 820),
+        ),
+    )
 
     workflow.add_edge(START, "supervisor_node")
-    workflow.add_edge("supervisor_node", "graph_retrieve_node")
-    workflow.add_edge("supervisor_node", "drug_retrieve_node")
-    workflow.add_edge("supervisor_node", "lit_retrieve_node")
-    workflow.add_edge("supervisor_node", "health_retrieve_node")
+    workflow.add_edge("supervisor_node", "drug_entity_resolve_node")
+    workflow.add_edge("drug_entity_resolve_node", "graph_retrieve_node")
+    workflow.add_edge("drug_entity_resolve_node", "drug_retrieve_node")
+    workflow.add_edge("drug_entity_resolve_node", "lit_retrieve_node")
+    workflow.add_edge("drug_entity_resolve_node", "health_retrieve_node")
     workflow.add_edge("graph_retrieve_node", "fuse_node")
     workflow.add_edge("drug_retrieve_node", "fuse_node")
     workflow.add_edge("lit_retrieve_node", "fuse_node")

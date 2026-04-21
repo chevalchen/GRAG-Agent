@@ -35,8 +35,25 @@ def _build_config() -> GraphRAGConfig:
             "milvus_port": Config.MILVUS_PORT,
             "milvus_uri": Config.MILVUS_URI,
             "milvus_collection_name": Config.MILVUS_COLLECTION_NAME,
+            "embedding_model": Config.FAST_EMBEDDING_MODEL if Config.FAST_MODE else Config.EMBEDDING_MODEL,
+            "llm_model": Config.FAST_LLM_MODEL if Config.FAST_MODE else Config.LLM_MODEL,
             "bm25_top_k": Config.BM25_TOP_K,
-            "reranker_model": Config.RERANKER_MODEL,
+            "reranker_model": Config.FAST_RERANKER_MODEL if Config.FAST_MODE else Config.RERANKER_MODEL,
+            "retrieval_balance_strategy": Config.RETRIEVAL_BALANCE_STRATEGY,
+            "retrieval_timeout_seconds": Config.RETRIEVAL_TIMEOUT_SECONDS,
+            "retrieve_expand_factor": Config.RETRIEVE_EXPAND_FACTOR,
+            "lit_expand_factor": Config.LIT_EXPAND_FACTOR,
+            "graph_expand_factor": Config.GRAPH_EXPAND_FACTOR,
+            "max_retrieval_top_k": Config.MAX_RETRIEVAL_TOP_K,
+            "max_graph_rows": Config.MAX_GRAPH_ROWS,
+            "graph_fallback_max_nodes": Config.GRAPH_FALLBACK_MAX_NODES,
+            "rerank_simple_skip_threshold": Config.RERANK_SIMPLE_SKIP_THRESHOLD,
+            "rerank_simple_candidate_limit": Config.RERANK_SIMPLE_CANDIDATE_LIMIT,
+            "rerank_complex_candidate_limit": Config.RERANK_COMPLEX_CANDIDATE_LIMIT,
+            "simple_context_budget_chars": Config.SIMPLE_CONTEXT_BUDGET_CHARS,
+            "complex_context_budget_chars": Config.COMPLEX_CONTEXT_BUDGET_CHARS,
+            "simple_per_doc_chars": Config.SIMPLE_PER_DOC_CHARS,
+            "complex_per_doc_chars": Config.COMPLEX_PER_DOC_CHARS,
             "checkpointer_path": Config.CHECKPOINTER_PATH,
         }
     )
@@ -87,36 +104,88 @@ def _list_history_sessions(db_path: str) -> list[dict]:
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT c.thread_id, c.checkpoint_id
-            FROM checkpoints c
-            JOIN (
-                SELECT thread_id, MAX(rowid) AS last_rowid
-                FROM checkpoints
+        cur.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        table_names = {str(name) for (name,) in (cur.fetchall() or [])}
+        has_checkpoints = "checkpoints" in table_names
+        has_writes = "writes" in table_names
+        sessions: list[dict] = []
+        visible_session_ids: set[str] = set()
+        if has_checkpoints:
+            cur.execute(
+                """
+                SELECT c.thread_id, c.checkpoint_id
+                FROM checkpoints c
+                JOIN (
+                    SELECT thread_id, MAX(rowid) AS last_rowid
+                    FROM checkpoints
+                    GROUP BY thread_id
+                ) last ON last.thread_id = c.thread_id AND last.last_rowid = c.rowid
+                ORDER BY c.rowid DESC
+                """
+            )
+            rows = cur.fetchall() or []
+            for thread_id, checkpoint_id in rows:
+                session_id = str(thread_id)
+                sessions.append(
+                    {"session_id": session_id, "checkpoint_id": str(checkpoint_id)}
+                )
+                visible_session_ids.add(session_id)
+        if has_writes:
+            cur.execute(
+                """
+                SELECT thread_id
+                FROM writes
                 GROUP BY thread_id
-            ) last ON last.thread_id = c.thread_id AND last.last_rowid = c.rowid
-            ORDER BY c.rowid DESC
-            """
-        )
-        rows = cur.fetchall() or []
+                ORDER BY MAX(rowid) DESC
+                """
+            )
+            write_rows = cur.fetchall() or []
+            for (thread_id,) in write_rows:
+                session_id = str(thread_id)
+                if session_id in visible_session_ids:
+                    continue
+                sessions.append({"session_id": session_id, "checkpoint_id": ""})
+                visible_session_ids.add(session_id)
         conn.close()
     except Exception:
         return []
-    return [{"session_id": str(thread_id), "checkpoint_id": str(checkpoint_id)} for thread_id, checkpoint_id in rows]
+    return sessions
 
 
-def _delete_session(db_path: str, session_id: str) -> bool:
+def _delete_session(db_path: str, session_id: str) -> dict:
     try:
         conn = sqlite3.connect(db_path)
         cur = conn.cursor()
         cur.execute("DELETE FROM writes WHERE thread_id = ?", (session_id,))
+        writes_deleted = cur.rowcount if cur.rowcount is not None else 0
         cur.execute("DELETE FROM checkpoints WHERE thread_id = ?", (session_id,))
+        checkpoints_deleted = cur.rowcount if cur.rowcount is not None else 0
         conn.commit()
         conn.close()
-        return True
-    except Exception:
-        return False
+        total_deleted = writes_deleted + checkpoints_deleted
+        if total_deleted <= 0:
+            return {
+                "code": "SESSION_NOT_FOUND",
+                "message": "会话不存在或已删除。",
+                "detail": {"session_id": session_id},
+            }
+        return {
+            "code": "OK",
+            "message": "会话删除成功。",
+            "detail": {
+                "session_id": session_id,
+                "deleted": {
+                    "writes": writes_deleted,
+                    "checkpoints": checkpoints_deleted,
+                },
+            },
+        }
+    except Exception as ex:
+        return {
+            "code": "INTERNAL_ERROR",
+            "message": "删除会话时发生内部错误。",
+            "detail": {"session_id": session_id, "error": str(ex)},
+        }
 
 
 mcp = FastMCP(name="tcm-assistant", lifespan=app_lifespan)
@@ -150,10 +219,17 @@ def session_delete(session_id: str) -> str:
     runtime = _get_runtime()
     sid = (session_id or "").strip()
     if not sid:
-        return "missing_session_id"
+        return json.dumps(
+            {
+                "code": "INVALID_ARGUMENT",
+                "message": "参数 session_id 不能为空。",
+                "detail": {"session_id": session_id},
+            },
+            ensure_ascii=False,
+        )
     db_path = runtime.config.checkpointer_path
-    ok = _delete_session(db_path, sid)
-    return "ok" if ok else "failed"
+    result = _delete_session(db_path, sid)
+    return json.dumps(result, ensure_ascii=False)
 
 
 def main():

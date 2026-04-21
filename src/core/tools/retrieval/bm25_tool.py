@@ -43,7 +43,20 @@ def build_bm25_from_milvus(milvus_client, top_k: int = 10, collection_name: str 
         rows = milvus_client.query(
             collection_name=collection_name,
             filter='doc_type == "drug"',
-            output_fields=["text", "doc_type", "chunk_type", "source", "drug_name", "answer", "node_id", "chunk_id"],
+            output_fields=[
+                "text",
+                "doc_type",
+                "chunk_type",
+                "source",
+                "drug_name",
+                "canonical_name",
+                "normalized_name",
+                "aliases_text",
+                "alias_norms_text",
+                "answer",
+                "node_id",
+                "chunk_id",
+            ],
             limit=16384,
         )
     except Exception:
@@ -58,6 +71,10 @@ def build_bm25_from_milvus(milvus_client, top_k: int = 10, collection_name: str 
                     "chunk_type": row.get("chunk_type") or "",
                     "source": row.get("source") or "",
                     "drug_name": row.get("drug_name") or "",
+                    "canonical_name": row.get("canonical_name") or "",
+                    "normalized_name": row.get("normalized_name") or "",
+                    "aliases_text": row.get("aliases_text") or "",
+                    "alias_norms_text": row.get("alias_norms_text") or "",
                     "answer": row.get("answer") or "",
                     "node_id": row.get("node_id") or "",
                     "chunk_id": row.get("chunk_id") or "",

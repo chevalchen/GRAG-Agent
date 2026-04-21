@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
 from langchain_core.documents import Document
@@ -31,6 +32,26 @@ LIMIT $limit
 TEMPLATE_DRUG_FALLBACK = """
 MATCH (d:Concept {conceptType:'Drug'})
 WHERE any(kw IN $all_keywords WHERE d.name CONTAINS kw)
+OPTIONAL MATCH (d)-[:CONTAINS]->(i:Concept {conceptType:'Ingredient'})
+OPTIONAL MATCH (d)-[:HAS_EFFECT]->(e:Concept {conceptType:'Effect'})
+OPTIONAL MATCH (d)-[:INDICATES]->(x:Concept)
+OPTIONAL MATCH (d)-[:CAUTION_FOR]->(p:Concept {conceptType:'Population'})
+OPTIONAL MATCH (d)-[ra]->(a:Concept {conceptType:'AdverseReaction'})
+WHERE type(ra) = 'HAS_ADVERSE_REACTION'
+OPTIONAL MATCH (i)-[:CAUTION_FOR]->(ip:Concept {conceptType:'Population'})
+RETURN d.nodeId AS node_id,
+       d.name AS drug_name,
+       collect(DISTINCT i.name)[..50] AS ingredients,
+       collect(DISTINCT e.name)[..50] AS effects,
+       collect(DISTINCT x.name)[..50] AS indications,
+       collect(DISTINCT p.name)[..50] AS cautions,
+       collect(DISTINCT a.name)[..50] AS adverse_reactions,
+       collect(DISTINCT {ingredient: i.name, caution: ip.name})[..80] AS ingredient_cautions
+LIMIT $limit
+"""
+
+TEMPLATE_DRUG_BY_NODE_ID = """
+MATCH (d:Concept {nodeId: $node_id, conceptType:'Drug'})
 OPTIONAL MATCH (d)-[:CONTAINS]->(i:Concept {conceptType:'Ingredient'})
 OPTIONAL MATCH (d)-[:HAS_EFFECT]->(e:Concept {conceptType:'Effect'})
 OPTIONAL MATCH (d)-[:INDICATES]->(x:Concept)
@@ -102,7 +123,14 @@ def _query_rows(neo4j: Neo4jGraphTool, cypher: str, params: dict) -> list[dict]:
         return []
 
 
-def make_graph_retrieve_node(neo4j: Neo4jGraphTool, *, top_k: int) -> Callable[[OnlineQAState], dict]:
+def make_graph_retrieve_node(
+    neo4j: Neo4jGraphTool,
+    *,
+    top_k: int,
+    expand_factor: float = 3.0,
+    max_graph_rows: int = 24,
+    graph_fallback_max_nodes: int = 48,
+) -> Callable[[OnlineQAState], dict]:
     """
     构建图检索节点
     
@@ -122,22 +150,55 @@ def make_graph_retrieve_node(neo4j: Neo4jGraphTool, *, top_k: int) -> Callable[[
         Returns:
             图检索结果
         """
+        t0 = time.time()
         routing = state.get("routing") or {}
         if not routing.get("use_graph"):
-            return {"graph_docs": []}
+            return {"graph_docs": [], "metrics": {**(state.get("metrics") or {}), "graph_retrieve_seconds": 0.0}}
         keywords = list(routing.get("keywords") or [])
         query = (state.get("query") or "").strip()
+        complexity = str(routing.get("complexity_level") or "complex")
+        resolved_drug = state.get("resolved_drug") or {}
         drug_keywords, all_keywords, strategy = _split_keywords(routing, query)
-        rows = _query_rows(neo4j, TEMPLATE_DRUG_CHAIN, {"drug_keywords": drug_keywords, "limit": int(top_k * 10)})
+        expanded_k = max(int(top_k * max(expand_factor, 1.0)), int(top_k))
+        row_limit = min(expanded_k, int(max_graph_rows))
+        rows = []
         template_used = "exact_drug"
+        if resolved_drug.get("node_id"):
+            rows = _query_rows(
+                neo4j,
+                TEMPLATE_DRUG_BY_NODE_ID,
+                {"node_id": str(resolved_drug.get("node_id") or ""), "limit": row_limit},
+            )
+            template_used = "resolved_node_id"
         if not rows:
-            rows = _query_rows(neo4j, TEMPLATE_DRUG_FALLBACK, {"all_keywords": all_keywords, "limit": int(top_k * 10)})
+            rows = _query_rows(neo4j, TEMPLATE_DRUG_CHAIN, {"drug_keywords": drug_keywords, "limit": row_limit})
+            template_used = "exact_drug"
+        if not rows:
+            rows = _query_rows(neo4j, TEMPLATE_DRUG_FALLBACK, {"all_keywords": all_keywords, "limit": row_limit})
             template_used = strategy
         if not rows:
-            docs = neo4j.invoke({"query": query, "max_depth": 2, "max_nodes": int(top_k * 20)}) or []
+            # 简单问句或已进行关键词回退后，不再继续触发高成本全图回退查询。
+            if complexity != "complex":
+                metrics = {
+                    **(state.get("metrics") or {}),
+                    "graph_rows": 0,
+                    "graph_docs": 0,
+                    "graph_template": "skipped_fallback",
+                    "graph_fallback_invoked": False,
+                    "graph_retrieve_seconds": time.time() - t0,
+                }
+                return {"graph_docs": [], "metrics": metrics}
+            docs = neo4j.invoke({"query": query, "max_depth": 2, "max_nodes": int(graph_fallback_max_nodes)}) or []
             for d in docs:
                 d.metadata = {**(d.metadata or {}), "search_source": "neo4j", "template_used": "neo4j_tool_fallback"}
-            metrics = {**(state.get("metrics") or {}), "graph_rows": len(docs), "graph_docs": len(docs), "graph_template": "neo4j_tool_fallback"}
+            metrics = {
+                **(state.get("metrics") or {}),
+                "graph_rows": len(docs),
+                "graph_docs": len(docs),
+                "graph_template": "neo4j_tool_fallback",
+                "graph_fallback_invoked": True,
+                "graph_retrieve_seconds": time.time() - t0,
+            }
             return {"graph_docs": docs, "metrics": metrics}
         docs: list[Document] = []
         for row in rows or []:
@@ -176,6 +237,9 @@ def make_graph_retrieve_node(neo4j: Neo4jGraphTool, *, top_k: int) -> Callable[[
                         "doc_type": "graph_chain",
                         "search_source": "neo4j",
                         "drug_name": row.get("drug_name") or "",
+                        "canonical_name": resolved_drug.get("canonical_name") or row.get("drug_name") or "",
+                        "match_type": resolved_drug.get("match_type") or "",
+                        "resolved_drug": resolved_drug or None,
                         "template_used": template_used,
                     },
                 )
@@ -185,6 +249,8 @@ def make_graph_retrieve_node(neo4j: Neo4jGraphTool, *, top_k: int) -> Callable[[
             "graph_rows": len(rows or []),
             "graph_docs": len(docs),
             "graph_template": template_used,
+            "graph_fallback_invoked": False,
+            "graph_retrieve_seconds": time.time() - t0,
         }
         return {"graph_docs": docs, "metrics": metrics}
 

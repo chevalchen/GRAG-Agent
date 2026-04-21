@@ -85,6 +85,16 @@ class TestRouteHybrid(unittest.TestCase):
         )
         self.assertEqual(state["answer"], "答：红烧肉做法")
 
+    def test_metrics_contains_total_seconds(self):
+        graph, *_ = _build("hybrid")
+        state = graph.invoke(
+            {"query": "时延指标测试", "metrics": {}},
+            config={"configurable": {"thread_id": "t-metrics-total"}},
+        )
+        metrics = state.get("metrics") or {}
+        self.assertIn("total_seconds", metrics)
+        self.assertGreaterEqual(float(metrics["total_seconds"]), 0.0)
+
 
 class TestRouteGraphRAG(unittest.TestCase):
     def test_graph_rag_strategy_uses_neo4j(self):
