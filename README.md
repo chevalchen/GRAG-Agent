@@ -242,6 +242,25 @@ curl -X GET "http://127.0.0.1:8000/api/v1/sessions"
 curl -X DELETE "http://127.0.0.1:8000/api/v1/sessions/demo-session-1"
 ```
 
+> 注：`api_server` 已内置 CORS，默认允许 `http://127.0.0.1:5500` 与 `http://localhost:5500`，便于本地静态前端直接联调。
+
+### 5. 前端页面（frontend-minimal）
+
+启动静态服务（保留 `-d frontend-minimal`）：
+
+```bash
+python -m http.server 5500 -d frontend-minimal
+```
+
+页面入口：
+- 控制台版：`http://127.0.0.1:5500/index.html`
+- 人群咨询版：`http://127.0.0.1:5500/audience.html`
+
+人群咨询版特性：
+- 面向病人、咨询人员、中医药爱好者三类用户
+- 错误采用弹窗展示（含 `code/status/trace_id/detail`）
+- 回答自动封装为摘要结论、可执行建议、风险与注意、追问方向
+
 ---
 
 ## 测试
