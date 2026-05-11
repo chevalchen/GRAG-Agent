@@ -23,14 +23,14 @@ def _collect_neo4j_stats() -> dict:
         return {"node_count": -1, "relationship_count": -1, "error": str(e)}
 
 
-def _collect_milvus_stats() -> dict:
+def _collect_milvus_stats(collection_name: str) -> dict:
     try:
         from pymilvus import MilvusClient
 
         client = MilvusClient(uri=Config.MILVUS_URI)
-        if not client.has_collection(Config.MILVUS_COLLECTION_NAME):
+        if not client.has_collection(collection_name):
             return {"doc_count": 0, "error": "collection_not_found"}
-        stats = client.get_collection_stats(collection_name=Config.MILVUS_COLLECTION_NAME) or {}
+        stats = client.get_collection_stats(collection_name=collection_name) or {}
         row_count = int(stats.get("row_count") or 0)
         return {"doc_count": row_count, "error": ""}
     except Exception as e:
@@ -67,20 +67,26 @@ def main(argv=None):
         f"failed_writes={len(state.get('failed_writes') or [])}"
     )
     neo4j_stats = _collect_neo4j_stats()
-    milvus_stats = _collect_milvus_stats()
+    milvus_stats = _collect_milvus_stats(Config.MILVUS_COLLECTION_NAME)
+    health_milvus_stats = _collect_milvus_stats(Config.MILVUS_HEALTH_COLLECTION_NAME)
     print(
         "[offline_ingestion] stats "
         f"neo4j_nodes={neo4j_stats['node_count']} "
         f"neo4j_relationships={neo4j_stats['relationship_count']} "
-        f"milvus_docs={milvus_stats['doc_count']}"
+        f"milvus_docs={milvus_stats['doc_count']} "
+        f"health_milvus_docs={health_milvus_stats['doc_count']}"
     )
     if neo4j_stats["error"]:
         print(f"[offline_ingestion] stats_warn neo4j={neo4j_stats['error']}")
     if milvus_stats["error"]:
-        print(f"[offline_ingestion] stats_warn milvus={milvus_stats['error']}")
+        print(f"[offline_ingestion] stats_warn milvus({Config.MILVUS_COLLECTION_NAME})={milvus_stats['error']}")
+    if health_milvus_stats["error"]:
+        print(
+            f"[offline_ingestion] stats_warn milvus({Config.MILVUS_HEALTH_COLLECTION_NAME})="
+            f"{health_milvus_stats['error']}"
+        )
     print(f"[offline_ingestion] metrics={metrics}")
 
 
 if __name__ == "__main__":
     main()
-
