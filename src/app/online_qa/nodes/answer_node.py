@@ -16,26 +16,38 @@ def _clip_text(text: str, max_chars: int) -> str:
     return value[: max_chars - 3] + "..."
 
 
+def _doc_context_text(doc) -> str:
+    metadata = doc.metadata or {}
+    question = str(doc.page_content or "").strip()
+    answer = str(metadata.get("answer") or "").strip()
+    chunk_type = str(metadata.get("chunk_type") or "").strip()
+    doc_type = str(metadata.get("doc_type") or "").strip()
+    if answer and (chunk_type == "qa" or doc_type == "health_popularization"):
+        return f"问题：{question}\n回答：{answer}" if question else f"回答：{answer}"
+    return question
+
+
 def _build_context_with_budget(docs, resolved_drug: dict, *, total_budget: int, per_doc_chars: int) -> tuple[str, int, int]:
     grouped: dict[str, list[tuple[str, str]]] = {
         "graph_chain": [],
         "drug": [],
         "tcm_literature": [],
-        "health_science": [],
+        "health_popularization": [],
         "other": [],
     }
     for doc in docs:
         metadata = doc.metadata or {}
         doc_type = str(metadata.get("doc_type") or "other")
         source = str(metadata.get("source") or "").strip()
+        content = _doc_context_text(doc)
         if doc_type not in grouped:
             doc_type = "other"
-        grouped[doc_type].append((doc.page_content, source))
+        grouped[doc_type].append((content, source))
     section_plan = [
         ("graph_chain", "【图谱证据链】", 0.34),
         ("drug", "【药品说明书】", 0.30),
         ("tcm_literature", "【中医文献】", 0.20),
-        ("health_science", "【健康科普】", 0.11),
+        ("health_popularization", "【健康科普】", 0.11),
         ("other", "【其他资料】", 0.05),
     ]
     context_parts: list[str] = []

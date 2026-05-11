@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 from langgraph.graph import END, START, StateGraph
 
@@ -18,7 +19,7 @@ from src.app.online_qa.nodes.supervisor_node import make_supervisor_node
 from src.app.online_qa.state import OnlineQAState
 from src.core.tools.graph.neo4j_tool import Neo4jGraphTool
 from src.core.tools.llm.generation_tool import LLMGenerationTool
-from src.core.tools.retrieval.bm25_tool import BM25Tool, build_bm25_from_milvus
+from src.core.tools.retrieval.bm25_tool import BM25Tool
 from src.core.tools.vector.milvus_tool import MilvusVectorTool
 
 
@@ -27,16 +28,21 @@ async def online_qa_lifespan(config: GraphRAGConfig):
     neo4j_tool = Neo4jGraphTool(config)
     milvus_tool = MilvusVectorTool(config)
     _ = milvus_tool.load_collection()
-    bm25_tool = build_bm25_from_milvus(
-        milvus_tool.client,
-        top_k=getattr(config, "bm25_top_k", config.top_k),
-        collection_name=milvus_tool.collection_name,
+    # 健康科普使用独立的 collection
+    health_config = replace(config, milvus_collection_name=config.milvus_health_collection_name)
+    health_milvus_tool = MilvusVectorTool(health_config)
+    _ = health_milvus_tool.load_collection()
+    # 懒加载：BM25Tool将在首次查询时从Milvus构建索引
+    bm25_tool = BM25Tool(
+        milvus_tool=milvus_tool,
+        cache_path=getattr(config, "bm25_cache_path", ".cache/bm25_index.pkl"),
     )
     llm_tool = LLMGenerationTool(config)
     try:
         yield {
             "bm25_tool": bm25_tool,
             "milvus_tool": milvus_tool,
+            "health_milvus_tool": health_milvus_tool,
             "neo4j_tool": neo4j_tool,
             "llm_tool": llm_tool,
         }
@@ -49,6 +55,7 @@ def build_graph(
     *,
     bm25_tool: BM25Tool,
     milvus_tool: MilvusVectorTool,
+    health_milvus_tool: MilvusVectorTool | None = None,
     neo4j_tool: Neo4jGraphTool,
     llm_tool: LLMGenerationTool,
 ):
@@ -82,6 +89,7 @@ def build_graph(
         answer -> END
         
     """
+    health_tool = health_milvus_tool or milvus_tool
     workflow = StateGraph(OnlineQAState)
     workflow.add_node("supervisor_node", make_supervisor_node(llm_tool))
     workflow.add_node("drug_entity_resolve_node", make_drug_entity_resolve_node(neo4j_tool))
@@ -116,7 +124,15 @@ def build_graph(
             max_retrieval_top_k=getattr(config, "max_retrieval_top_k", 12),
         ),
     )
-    workflow.add_node("health_retrieve_node", make_health_retrieve_node())
+    workflow.add_node(
+        "health_retrieve_node",
+        make_health_retrieve_node(
+            health_tool,
+            top_k=config.top_k,
+            expand_factor=getattr(config, "lit_expand_factor", 1.5),
+            max_retrieval_top_k=getattr(config, "max_retrieval_top_k", 12),
+        ),
+    )
     workflow.add_node("fuse_node", make_fuse_node(top_k=config.top_k))
     workflow.add_node(
         "rerank_node",
