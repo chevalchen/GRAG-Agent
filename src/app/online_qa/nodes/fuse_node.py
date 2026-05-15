@@ -48,30 +48,13 @@ def _rrf(docs_lists: list[list[Document]], *, k: int, top_k: int) -> list[Docume
 
 def make_fuse_node(*, top_k: int) -> Callable[[OnlineQAState], dict]:
     """
-    构建融合节点
-
-    Args:
-        top_k: 融合文档数量
-
-    Returns:
-        融合节点
+    Two-bucket RRF fusion node: milvus_docs + graph_docs.
     """
     def fuse_node(state: OnlineQAState) -> dict:
-        """
-        融合节点
-        
-        Args:
-            state: 在线问答状态
-            
-        Returns:
-            融合结果
-        """
         t0 = time.time()
-        drug_docs = state.get("drug_docs") or []
-        graph_docs = state.get("graph_docs") or []
-        lit_docs = state.get("lit_docs") or []
-        health_docs = state.get("health_docs") or []
-        all_lists = [graph_docs, drug_docs, lit_docs, health_docs]
+        milvus_docs = list(state.get("milvus_docs") or [])
+        graph_docs = list(state.get("graph_docs") or [])
+        all_lists = [milvus_docs, graph_docs]
         non_empty = [x for x in all_lists if x]
         if not non_empty:
             docs_rrf = []
@@ -81,17 +64,21 @@ def make_fuse_node(*, top_k: int) -> Callable[[OnlineQAState], dict]:
             docs_rrf = _rrf(all_lists, k=60, top_k=int(top_k * 3))
         prev_metrics = state.get("metrics") or {}
         retrieve_seconds = (
-            float(prev_metrics.get("graph_retrieve_seconds", 0.0))
-            + float(prev_metrics.get("drug_retrieve_seconds", 0.0))
-            + float(prev_metrics.get("lit_retrieve_seconds", 0.0))
-            + float(prev_metrics.get("health_retrieve_seconds", 0.0))
+            float(prev_metrics.get("milvus_search_seconds", 0.0))
+            + float(prev_metrics.get("graph_enrich_seconds", 0.0))
+            + float(prev_metrics.get("neo4j_search_seconds", 0.0))
+            + float(prev_metrics.get("milvus_fetch_seconds", 0.0))
         )
-        metrics = {
-            **prev_metrics,
-            "retrieve_seconds": retrieve_seconds,
-            "fuse_seconds": time.time() - t0,
-            "fuse_ready": True,
+        return {
+            "docs_rrf": docs_rrf,
+            "metrics": {
+                **prev_metrics,
+                "retrieve_seconds": retrieve_seconds,
+                "fuse_seconds": time.time() - t0,
+                "fuse_milvus_docs": len(milvus_docs),
+                "fuse_graph_docs": len(graph_docs),
+                "fuse_ready": True,
+            },
         }
-        return {"docs_rrf": docs_rrf, "metrics": metrics}
 
     return fuse_node

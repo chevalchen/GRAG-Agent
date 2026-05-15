@@ -1,4 +1,14 @@
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Annotated, Any, Dict, List, Optional, TypedDict
+
+
+def _merge_metrics(left: Dict[str, Any] | None, right: Dict[str, Any] | None) -> Dict[str, Any]:
+    merged = dict(left or {})
+    merged.update(right or {})
+    return merged
+
+
+def _pick_error(left: Optional[str], right: Optional[str]) -> Optional[str]:
+    return right or left
 
 
 class OfflineIngestionState(TypedDict, total=False):
@@ -29,13 +39,15 @@ class OfflineIngestionState(TypedDict, total=False):
     file_list: List[str]
     medical_entities_path: str
     literature_path: str
+    health_chunk_records: List[Dict[str, Any]]
     next_index: int
     processed: int
     failed: int
     current_batch_count: int
     indexed_count: int
+    health_indexed_count: int
     failed_writes: List[Dict[str, Any]]
     parsed_records: List[Dict[str, Any]]
     chunk_records: List[Dict[str, Any]]
-    metrics: Dict[str, Any]
-    error: Optional[str]
+    metrics: Annotated[Dict[str, Any], _merge_metrics]
+    error: Annotated[Optional[str], _pick_error]

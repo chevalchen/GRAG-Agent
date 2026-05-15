@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>中医问诊助手 | 人群版</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./audience.css" />
+  </head>
+  <body>
+    <main class="wrap">
+      <header class="top">
+        <p class="kicker">TCM CONSULT · MULTI PERSONA</p>
+        <h1>中医问诊助手（人群版）</h1>
+        <p class="desc">面向病人、咨询人员、中医药爱好者，提供结构化建议、风险提示和追问方向。</p>
+        <a class="back-link" href="./index.html">返回控制台版本</a>
+      </header>
+
+      <section class="panel">
+        <h2>咨询对象</h2>
+        <div class="persona-group">
+          <button id="rolePatient" class="persona active" type="button">病人</button>
+          <button id="roleConsultant" class="persona" type="button">咨询人员</button>
+          <button id="roleEnthusiast" class="persona" type="button">中医药爱好者</button>
+        </div>
+        <p id="roleHint" class="hint"></p>
+      </section>
+
+      <section class="panel">
+        <h2>提问与连接</h2>
+        <div class="grid">
+          <label for="apiBase">API Base URL</label>
+          <input id="apiBase" value="http://127.0.0.1:8000" />
+          <label for="sessionId">会话ID</label>
+          <input id="sessionId" placeholder="可选，不填自动创建" />
+        </div>
+        <div class="q-row">
+          <textarea id="question" placeholder="请输入问题，例如：我有糖尿病，想知道作息和饮食怎么调整？"></textarea>
+        </div>
+        <div class="actions">
+          <button id="btnHealth" type="button">健康检查</button>
+          <button id="btnAsk" class="btn-main" type="button">开始咨询</button>
+          <button id="btnRefreshSessions" type="button">刷新会话</button>
+          <button id="btnDeleteSession" class="btn-danger" type="button">删除当前会话</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>信息封装</h2>
+        <div class="cards">
+          <article class="card">
+            <h3>摘要结论</h3>
+            <p id="summaryText">-</p>
+          </article>
+          <article class="card">
+            <h3>可执行建议</h3>
+            <ul id="actionsList"></ul>
+          </article>
+          <article class="card">
+            <h3>风险与注意</h3>
+            <ul id="warningsList"></ul>
+          </article>
+          <article class="card">
+            <h3>追问方向</h3>
+            <ul id="followupList"></ul>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2>会话与请求信息</h2>
+        <p id="traceText">trace_id：-</p>
+        <p id="answerText">原始回答：-</p>
+        <ul id="sessionList" class="session-list"></ul>
+      </section>
+    </main>
+
+    <div id="errorModal" class="modal hidden" aria-hidden="true">
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="errorTitle">
+        <h3 id="errorTitle">请求失败</h3>
+        <p id="errorMain">-</p>
+        <pre id="errorDetail"></pre>
+        <button id="closeErrorModal" type="button">我知道了</button>
+      </div>
+    </div>
+
+    <script type="module" src="./audience.js"></script>
+  </body>
+</html>

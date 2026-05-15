@@ -1,0 +1,5 @@
+{
+  "name": "frontend-minimal-tests",
+  "private": true,
+  "type": "module"
+}

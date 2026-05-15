@@ -6,6 +6,17 @@ from collections.abc import Callable
 from src.app.online_qa.state import OnlineQAState
 
 
+def _doc_rerank_text(doc) -> str:
+    metadata = doc.metadata or {}
+    question = str(doc.page_content or "").strip()
+    answer = str(metadata.get("answer") or "").strip()
+    chunk_type = str(metadata.get("chunk_type") or "").strip()
+    doc_type = str(metadata.get("doc_type") or "").strip()
+    if answer and (chunk_type == "qa" or doc_type == "health_popularization"):
+        return f"问题：{question}\n回答：{answer}" if question else f"回答：{answer}"
+    return question
+
+
 def make_rerank_node(
     reranker_model: str,
     *,
@@ -38,7 +49,7 @@ def make_rerank_node(
                     "rerank_candidates": 0,
                 },
             }
-        query = (state.get("query") or "").strip()
+        query = (state.get("rewritten_query") or state.get("query") or "").strip()
         routing = state.get("routing") or {}
         complexity = str(routing.get("complexity_level") or "complex")
         if len(docs) <= int(top_k):
@@ -72,7 +83,7 @@ def make_rerank_node(
                 "rerank_candidates": len(candidates),
             }
             return {"docs_final": candidates[: int(top_k)], "metrics": metrics}
-        pairs = [[query, d.page_content] for d in candidates]
+        pairs = [[query, _doc_rerank_text(d)] for d in candidates]
         try:
             scores = model.predict(pairs)
         except Exception:

@@ -1,7 +1,21 @@
+"""
+Tests for the Stage 2 online-QA LangGraph workflow.
+
+Architecture under test:
+  START → router → [milvus_search → graph_enrich → fuse | neo4j_search → milvus_fetch → fuse]
+       → rerank → sufficiency → [answer | router (loop ≤1)]
+  answer → END
+
+All graph traversals use ainvoke() because answer_node is async.
+"""
+from __future__ import annotations
+
+import asyncio
 import os
 import sqlite3
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from langchain_core.documents import Document
@@ -9,124 +23,201 @@ from langchain_core.documents import Document
 from src.app.config import DEFAULT_CONFIG, GraphRAGConfig
 from src.app.online_qa.cli import _delete_session, _list_history_sessions
 from src.app.online_qa.graphs.online_qa_graph import build_graph
-from src.core.tools.graph.neo4j_tool import Neo4jGraphTool
-from src.core.tools.llm.generation_tool import LLMGenerationTool
-from src.core.tools.retrieval.bm25_tool import BM25Tool
-from src.core.tools.vector.milvus_tool import MilvusVectorTool
 
 
-def _make_stub_tools(
-    supervisor_strategy: str = "hybrid",
-    hybrid_docs: list[Document] | None = None,
-    graph_docs: list[Document] | None = None,
-    answer_text: str = "ANSWER",
-):
-    hybrid_docs = hybrid_docs or [Document(page_content="H", metadata={"node_id": "n1", "chunk_id": "c1", "doc_type": "drug"})]
-    graph_docs = graph_docs or [
-        Document(page_content="G", metadata={"node_id": "n2", "chunk_id": "c2", "doc_type": "drug"})
-    ]
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
-    llm = MagicMock(spec=LLMGenerationTool)
+def _make_stub_llm(answer_text: str = "ANSWER"):
+    """
+    Build a mock LLMGenerationTool.
+
+    invoke_text discriminates calls by prompt content:
+      - router prompt  : contains "symptom_to_drug" (one of the listed valid intents)
+      - sufficiency    : contains "sufficient" (English keyword in the prompt)
+      - suggest        : everything else (post-answer follow-up generation)
+
+    llm._llm.astream() is an async generator yielding a single mock chunk.
+    """
+    llm = MagicMock()
 
     def _invoke_text(prompt: str) -> str:
-        if "query_intent" in prompt:
-            if supervisor_strategy == "graph_rag":
-                return '{"query_intent":"symptom_disease","use_graph":true,"use_drug_vec":false,"use_lit_vec":false,"use_health_vec":false,"source_hint":[],"keywords":["测试"],"reason":"test"}'
-            if supervisor_strategy == "combined":
-                return '{"query_intent":"symptom_disease","use_graph":true,"use_drug_vec":true,"use_lit_vec":false,"use_health_vec":false,"source_hint":[],"keywords":["测试"],"reason":"test"}'
-            return '{"query_intent":"drug_specific","use_graph":false,"use_drug_vec":true,"use_lit_vec":false,"use_health_vec":false,"source_hint":[],"keywords":["测试"],"reason":"test"}'
-        return answer_text
+        if "symptom_to_drug" in prompt:
+            # Router call — return valid intent JSON
+            return (
+                '{"intent":"symptom_to_drug","complexity_level":"simple",'
+                '"keywords":["测试"],"reason":"test"}'
+            )
+        if "sufficient" in prompt:
+            # Sufficiency judge call
+            return "sufficient"
+        # Suggest / next_questions call
+        return '["追问1","追问2","追问3"]'
 
     llm.invoke_text.side_effect = _invoke_text
 
-    bm25 = MagicMock(spec=BM25Tool)
-    bm25.invoke.return_value = hybrid_docs
+    # answer_node calls llm._llm.astream() for token streaming
+    async def _astream(messages):
+        yield SimpleNamespace(content=answer_text)
 
-    milvus = MagicMock(spec=MilvusVectorTool)
-    milvus.invoke.return_value = hybrid_docs
+    llm._llm = MagicMock()
+    llm._llm.astream = _astream
+    return llm
 
-    neo4j = MagicMock(spec=Neo4jGraphTool)
-    neo4j.invoke.return_value = graph_docs
-    neo4j._graph = MagicMock()
-    neo4j._graph.query.return_value = [
-        {"node_id": d.metadata.get("node_id", ""), "drug_name": d.page_content, "ingredients": []} for d in graph_docs
+
+def _make_stub_tools(answer_text: str = "ANSWER", docs: list[Document] | None = None):
+    docs = docs or [
+        Document(page_content="H", metadata={"node_id": "n1", "chunk_id": "c1", "doc_type": "drug"})
     ]
+    llm = _make_stub_llm(answer_text)
+
+    bm25 = MagicMock()
+    bm25.invoke.return_value = docs
+
+    milvus = MagicMock()
+    milvus.invoke.return_value = docs
+
+    neo4j = MagicMock()
+    neo4j.invoke.return_value = []
+    neo4j._graph = MagicMock()
+    neo4j._graph.query.return_value = []
 
     return llm, bm25, milvus, neo4j
 
 
-def _build(
-    supervisor_strategy: str = "hybrid",
-    hybrid_docs: list[Document] | None = None,
-    graph_docs: list[Document] | None = None,
-    answer_text: str = "ANSWER",
-):
+def _build(answer_text: str = "ANSWER", docs: list[Document] | None = None):
     config = GraphRAGConfig(**{**DEFAULT_CONFIG.to_dict(), "top_k": 3})
-    llm, bm25, milvus, neo4j = _make_stub_tools(supervisor_strategy, hybrid_docs, graph_docs, answer_text)
+    llm, bm25, milvus, neo4j = _make_stub_tools(answer_text, docs)
     graph = build_graph(config, bm25_tool=bm25, milvus_tool=milvus, neo4j_tool=neo4j, llm_tool=llm)
     return graph, llm, bm25, milvus, neo4j
 
 
-class TestRouteHybrid(unittest.TestCase):
-    def test_hybrid_strategy_uses_bm25_and_milvus(self):
-        graph, llm, bm25, milvus, neo4j = _build("hybrid")
-        state = graph.invoke(
-            {"query": "红烧肉怎么做", "metrics": {}},
-            config={"configurable": {"thread_id": "t-hybrid"}},
-        )
-        self.assertTrue(bm25.invoke.called or milvus.invoke.called)
-        self.assertIn("H", state["docs_final"][0].page_content)
+def _run(coro):
+    """Run an async coroutine from sync test code."""
+    return asyncio.run(coro)
 
-    def test_hybrid_answer_is_populated(self):
-        graph, *_ = _build("hybrid", answer_text="答：红烧肉做法")
-        state = graph.invoke(
+
+# ---------------------------------------------------------------------------
+# Basic forward flow (symptom_to_drug → milvus_search → ... → answer)
+# ---------------------------------------------------------------------------
+
+class TestBasicQAFlow(unittest.TestCase):
+    def test_retrieval_tools_are_called(self):
+        graph, llm, bm25, milvus, neo4j = _build()
+        _run(graph.ainvoke(
+            {"query": "红烧肉怎么做", "metrics": {}},
+            config={"configurable": {"thread_id": "t-retrieval"}},
+        ))
+        self.assertTrue(bm25.invoke.called or milvus.invoke.called)
+
+    def test_docs_final_is_populated(self):
+        graph, *_ = _build()
+        state = _run(graph.ainvoke(
+            {"query": "乌鸡白凤丸的适应症", "metrics": {}},
+            config={"configurable": {"thread_id": "t-docs"}},
+        ))
+        self.assertGreater(len(state.get("docs_final") or []), 0)
+
+    def test_answer_is_populated(self):
+        graph, *_ = _build(answer_text="答：这是测试答案。")
+        state = _run(graph.ainvoke(
             {"query": "红烧肉", "metrics": {}},
-            config={"configurable": {"thread_id": "t-hybrid-ans"}},
-        )
-        self.assertEqual(state["answer"], "答：红烧肉做法")
+            config={"configurable": {"thread_id": "t-answer"}},
+        ))
+        self.assertEqual(state["answer"], "答：这是测试答案。")
 
     def test_metrics_contains_total_seconds(self):
-        graph, *_ = _build("hybrid")
-        state = graph.invoke(
+        graph, *_ = _build()
+        state = _run(graph.ainvoke(
             {"query": "时延指标测试", "metrics": {}},
-            config={"configurable": {"thread_id": "t-metrics-total"}},
-        )
+            config={"configurable": {"thread_id": "t-metrics"}},
+        ))
         metrics = state.get("metrics") or {}
         self.assertIn("total_seconds", metrics)
         self.assertGreaterEqual(float(metrics["total_seconds"]), 0.0)
 
 
-class TestRouteGraphRAG(unittest.TestCase):
-    def test_graph_rag_strategy_uses_neo4j(self):
-        graph, llm, bm25, milvus, neo4j = _build("graph_rag")
-        state = graph.invoke(
-            {"query": "猪肉和豆腐有什么关系", "metrics": {}},
-            config={"configurable": {"thread_id": "t-graph"}},
+# ---------------------------------------------------------------------------
+# Chat intent: routes directly to answer without retrieval
+# ---------------------------------------------------------------------------
+
+class TestChatIntent(unittest.TestCase):
+    def _build_chat_graph(self):
+        config = GraphRAGConfig(**{**DEFAULT_CONFIG.to_dict(), "top_k": 3})
+
+        llm = MagicMock()
+
+        def _invoke_text_chat(prompt: str) -> str:
+            if "symptom_to_drug" in prompt:
+                return (
+                    '{"intent":"chat","complexity_level":"simple",'
+                    '"keywords":[],"reason":"greeting"}'
+                )
+            return "sufficient"
+
+        llm.invoke_text.side_effect = _invoke_text_chat
+
+        async def _astream(messages):
+            yield SimpleNamespace(content="你好！有什么可以帮您？")
+
+        llm._llm = MagicMock()
+        llm._llm.astream = _astream
+
+        bm25 = MagicMock()
+        bm25.invoke.return_value = []
+        milvus = MagicMock()
+        milvus.invoke.return_value = []
+        neo4j = MagicMock()
+        neo4j._graph = MagicMock()
+        neo4j._graph.query.return_value = []
+
+        graph = build_graph(
+            config,
+            bm25_tool=bm25,
+            milvus_tool=milvus,
+            neo4j_tool=neo4j,
+            llm_tool=llm,
         )
-        neo4j._graph.query.assert_called()
-        self.assertIn("G", state["docs_final"][0].page_content)
+        return graph, bm25, milvus
+
+    def test_chat_skips_retrieval(self):
+        """chat intent → answer directly, no bm25/milvus calls."""
+        graph, bm25, milvus = self._build_chat_graph()
+        _run(graph.ainvoke(
+            {"query": "你好", "metrics": {}},
+            config={"configurable": {"thread_id": "t-chat"}},
+        ))
+        bm25.invoke.assert_not_called()
+        milvus.invoke.assert_not_called()
+
+    def test_chat_answer_is_not_empty(self):
+        graph, *_ = self._build_chat_graph()
+        state = _run(graph.ainvoke(
+            {"query": "你好", "metrics": {}},
+            config={"configurable": {"thread_id": "t-chat-ans"}},
+        ))
+        # chat with no docs → early-exit "请先输入问题" or "没有检索到" message
+        self.assertIsNotNone(state.get("answer"))
+        self.assertGreater(len(state["answer"]), 0)
 
 
-class TestRouteCombined(unittest.TestCase):
-    def test_combined_fuses_both_sources(self):
-        h_docs = [Document(page_content="H" * 50, metadata={"node_id": "h1", "chunk_id": "ch1", "recipe_name": "H菜"})]
-        g_docs = [Document(page_content="G" * 50, metadata={"node_id": "g1", "chunk_id": "cg1", "recipe_name": "G菜"})]
-        graph, *_ = _build("combined", hybrid_docs=h_docs, graph_docs=g_docs)
-        state = graph.invoke(
-            {"query": "综合检索测试", "metrics": {}},
-            config={"configurable": {"thread_id": "t-combined"}},
-        )
-        contents = [d.page_content for d in state["docs_final"]]
-        self.assertTrue(any("H" in c for c in contents))
-        self.assertTrue(any("G" in c for c in contents))
-
+# ---------------------------------------------------------------------------
+# Multi-turn memory
+# ---------------------------------------------------------------------------
 
 class TestMemory(unittest.TestCase):
     def test_history_accumulates_across_turns(self):
-        graph, *_ = _build("hybrid")
-        sid = "t-memory"
-        graph.invoke({"query": "第一问", "metrics": {}}, config={"configurable": {"thread_id": sid}})
-        state = graph.invoke({"query": "第二问", "metrics": {}}, config={"configurable": {"thread_id": sid}})
+        graph, *_ = _build()
+        sid = "t-memory-accum"
+        _run(graph.ainvoke(
+            {"query": "第一问", "metrics": {}},
+            config={"configurable": {"thread_id": sid}},
+        ))
+        state = _run(graph.ainvoke(
+            {"query": "第二问", "metrics": {}},
+            config={"configurable": {"thread_id": sid}},
+        ))
         history = state.get("history") or []
         self.assertGreaterEqual(len(history), 4)
         roles = [h["role"] for h in history]
@@ -134,38 +225,49 @@ class TestMemory(unittest.TestCase):
         self.assertIn("assistant", roles)
 
     def test_history_roles_are_correct(self):
-        graph, *_ = _build("hybrid")
-        state = graph.invoke(
+        graph, *_ = _build()
+        state = _run(graph.ainvoke(
             {"query": "角色测试", "metrics": {}},
             config={"configurable": {"thread_id": "t-roles"}},
-        )
+        ))
         history = state.get("history") or []
-        self.assertTrue(len(history) >= 2)
+        self.assertGreaterEqual(len(history), 2)
         self.assertEqual(history[-2]["role"], "user")
         self.assertEqual(history[-1]["role"], "assistant")
 
 
-class TestAnalysisField(unittest.TestCase):
-    def test_analysis_is_routing_signal(self):
-        graph, *_ = _build("hybrid")
-        state = graph.invoke(
+# ---------------------------------------------------------------------------
+# Routing signal shape
+# ---------------------------------------------------------------------------
+
+class TestRoutingField(unittest.TestCase):
+    def test_routing_has_intent_key(self):
+        graph, *_ = _build()
+        state = _run(graph.ainvoke(
             {"query": "分析字段测试", "metrics": {}},
-            config={"configurable": {"thread_id": "t-analysis"}},
-        )
+            config={"configurable": {"thread_id": "t-routing-field"}},
+        ))
         routing = state.get("routing")
         self.assertIsNotNone(routing)
-        self.assertIn(routing.get("query_intent"), {"drug_specific", "symptom_disease", "tcm_theory", "clinical_case", "health_advice"})
+        self.assertIn(
+            routing.get("intent"),
+            {"chat", "theory", "symptom_to_drug", "conditions_exact"},
+        )
 
-    def test_empty_query_returns_default_routing(self):
-        graph, *_ = _build("hybrid")
-        state = graph.invoke(
+    def test_empty_query_returns_safe_answer(self):
+        graph, *_ = _build()
+        state = _run(graph.ainvoke(
             {"query": "", "metrics": {}},
-            config={"configurable": {"thread_id": "t-empty"}},
-        )
-        routing = state.get("routing")
-        self.assertIsNotNone(routing)
-        self.assertEqual(routing.get("query_intent"), "tcm_theory")
+            config={"configurable": {"thread_id": "t-empty-query"}},
+        ))
+        # answer_node detects empty query and returns a polite message
+        answer = state.get("answer") or ""
+        self.assertGreater(len(answer), 0)
 
+
+# ---------------------------------------------------------------------------
+# Session management (pure SQLite — unchanged from original)
+# ---------------------------------------------------------------------------
 
 class TestSessionManagement(unittest.TestCase):
     def _make_db(self) -> str:

@@ -3,6 +3,7 @@ import logging
 import sqlite3
 import sys
 import uuid
+from dataclasses import replace
 
 from src.app.config import Config, DEFAULT_CONFIG, GraphRAGConfig
 from src.app.online_qa.graphs.online_qa_graph import build_graph
@@ -16,6 +17,10 @@ def _build_system(config: GraphRAGConfig):
     neo4j_tool = Neo4jGraphTool(config)
     milvus_tool = MilvusVectorTool(config)
     _ = milvus_tool.load_collection()
+    # 健康科普使用独立的 collection
+    health_config = replace(config, milvus_collection_name=config.milvus_health_collection_name)
+    health_milvus_tool = MilvusVectorTool(health_config)
+    _ = health_milvus_tool.load_collection()
     bm25_tool = build_bm25_from_milvus(
         milvus_tool.client,
         top_k=getattr(config, "bm25_top_k", config.top_k),
@@ -26,6 +31,7 @@ def _build_system(config: GraphRAGConfig):
         config,
         bm25_tool=bm25_tool,
         milvus_tool=milvus_tool,
+        health_milvus_tool=health_milvus_tool,
         neo4j_tool=neo4j_tool,
         llm_tool=llm_tool,
     )
@@ -278,6 +284,7 @@ def main(argv=None):
             "milvus_port": Config.MILVUS_PORT,
             "milvus_uri": Config.MILVUS_URI,
             "milvus_collection_name": Config.MILVUS_COLLECTION_NAME,
+            "milvus_health_collection_name": Config.MILVUS_HEALTH_COLLECTION_NAME,
             "embedding_model": Config.FAST_EMBEDDING_MODEL if Config.FAST_MODE else Config.EMBEDDING_MODEL,
             "llm_model": Config.FAST_LLM_MODEL if Config.FAST_MODE else Config.LLM_MODEL,
             "reranker_model": Config.FAST_RERANKER_MODEL if Config.FAST_MODE else Config.RERANKER_MODEL,

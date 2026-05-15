@@ -28,6 +28,7 @@ class GraphRAGConfig:
     milvus_port: int = 19531
     milvus_uri: str = "http://localhost:19531"
     milvus_collection_name: str = "tcm_knowledge"
+    milvus_health_collection_name: str = "health_knowledge"
     milvus_dimension: int = 512
 
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
@@ -60,7 +61,13 @@ class GraphRAGConfig:
     max_graph_depth: int = 2
     history_window: int = 10
     checkpointer_path: str = ".checkpoints/tcm.db"
+    bm25_cache_path: str = ".cache/bm25_index.pkl"
     enable_long_term_write: bool = False
+    # frontend CORS origins (space or comma separated when set via env)
+    frontend_origins: str = "http://localhost:5173"
+    # sufficiency loop max iterations (Stage 2)
+    sufficiency_max_iters: int = 1
+    enable_stream: bool = True
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "GraphRAGConfig":
@@ -76,6 +83,7 @@ class GraphRAGConfig:
             "milvus_port": self.milvus_port,
             "milvus_uri": self.milvus_uri,
             "milvus_collection_name": self.milvus_collection_name,
+            "milvus_health_collection_name": self.milvus_health_collection_name,
             "milvus_dimension": self.milvus_dimension,
             "embedding_model": self.embedding_model,
             "llm_model": self.llm_model,
@@ -104,6 +112,7 @@ class GraphRAGConfig:
             "max_graph_depth": self.max_graph_depth,
             "history_window": self.history_window,
             "checkpointer_path": self.checkpointer_path,
+            "bm25_cache_path": self.bm25_cache_path,
             "enable_long_term_write": self.enable_long_term_write,
         }
 
@@ -120,6 +129,7 @@ class Config:
     MILVUS_PORT = int(env_utils.MILVUS_PORT or DEFAULT_CONFIG.milvus_port)
     MILVUS_URI = getattr(env_utils, "MILVUS_URI", None) or DEFAULT_CONFIG.milvus_uri
     MILVUS_COLLECTION_NAME = env_utils.MILVUS_COLLECTION_NAME or "tcm_knowledge"
+    MILVUS_HEALTH_COLLECTION_NAME = getattr(env_utils, "MILVUS_HEALTH_COLLECTION_NAME", None) or "health_knowledge"
     EMBEDDING_MODEL = getattr(env_utils, "EMBEDDING_MODEL", None) or DEFAULT_CONFIG.embedding_model
     LLM_MODEL = getattr(env_utils, "LLM_MODEL", None) or DEFAULT_CONFIG.llm_model
     RERANKER_MODEL = getattr(env_utils, "RERANKER_MODEL", None) or DEFAULT_CONFIG.reranker_model
@@ -154,4 +164,10 @@ class Config:
     FAST_LLM_MODEL = getattr(env_utils, "FAST_LLM_MODEL", None) or LLM_MODEL
     FAST_RERANKER_MODEL = getattr(env_utils, "FAST_RERANKER_MODEL", None) or RERANKER_MODEL
     CHECKPOINTER_PATH = getattr(env_utils, "CHECKPOINTER_PATH", None) or DEFAULT_CONFIG.checkpointer_path
-    SESSION_ID = env_utils.C9_SESSION_ID or None
+    BM25_CACHE_PATH = getattr(env_utils, "BM25_CACHE_PATH", None) or DEFAULT_CONFIG.bm25_cache_path
+    SESSION_ID = getattr(env_utils, "SESSION_ID", None) or None
+    # FRONTEND_ORIGINS: space or comma separated list, e.g. "http://localhost:5173,http://localhost:8080"
+    _origins_raw = getattr(env_utils, "FRONTEND_ORIGINS", None) or DEFAULT_CONFIG.frontend_origins
+    FRONTEND_ORIGINS: list[str] = [o.strip() for o in _origins_raw.replace(",", " ").split() if o.strip()]
+    SUFFICIENCY_MAX_ITERS = int(getattr(env_utils, "SUFFICIENCY_MAX_ITERS", None) or DEFAULT_CONFIG.sufficiency_max_iters)
+    ENABLE_STREAM = _as_bool(getattr(env_utils, "ENABLE_STREAM", None), default=True)

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TCM 智能问答控制台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Marcellus&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="mesh mesh-a"></div>
+    <div class="mesh mesh-b"></div>
+    <main class="container">
+      <header class="hero">
+        <p class="hero-kicker">GRAPH RAG · TCM</p>
+        <h1>中医药智能问答控制台</h1>
+        <p class="hero-sub">面向 FastAPI 接口的联调前端，覆盖健康检查、问答、会话查询与会话删除。</p>
+        <p class="hero-sub"><a href="./audience.html">切换到人群咨询版界面</a></p>
+      </header>
+
+      <section class="panel panel-status">
+        <div class="panel-head">
+          <h2>系统状态</h2>
+          <p class="panel-tip">先执行健康检查，确认后端可达后再提问。</p>
+        </div>
+        <div class="row">
+          <label for="apiBase">API Base URL</label>
+          <input id="apiBase" type="text" value="http://127.0.0.1:8000" />
+          <button id="btnHealth" class="btn btn-secondary">健康检查</button>
+        </div>
+        <p id="healthText" class="status-line">健康状态：unknown</p>
+      </section>
+
+      <div class="grid">
+        <section class="panel panel-chat">
+          <div class="panel-head">
+            <h2>问答区</h2>
+            <p class="panel-tip">建议描述越具体，召回效果越好。</p>
+          </div>
+          <div class="row row-stack">
+            <label for="question">问题</label>
+            <input id="question" type="text" placeholder="例如：我有糖尿病，如何安排作息和饮食？" />
+          </div>
+          <div class="row">
+            <label for="sessionId">会话ID</label>
+            <input id="sessionId" type="text" placeholder="可选，不填则后端创建" />
+            <button id="btnAsk" class="btn btn-primary">发送问题</button>
+          </div>
+          <p id="answerText" class="answer-box">回答：-</p>
+        </section>
+
+        <section class="panel panel-sessions">
+          <div class="panel-head">
+            <h2>会话管理</h2>
+            <p class="panel-tip">点击会话可自动回填到输入框。</p>
+          </div>
+          <div class="row row-wrap">
+            <button id="btnRefreshSessions" class="btn btn-secondary">刷新会话</button>
+            <button id="btnDeleteSession" class="btn btn-danger">删除当前会话</button>
+          </div>
+          <ul id="sessionList" class="session-list"></ul>
+        </section>
+      </div>
+
+      <section class="panel panel-meta">
+        <h2>请求信息</h2>
+        <p id="traceText">trace_id：-</p>
+        <p id="errorText" class="error">错误：-</p>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+  </html>

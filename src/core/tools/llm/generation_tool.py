@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
@@ -35,6 +35,7 @@ class LLMGenerationTool(BaseTool):
             base_url=base_url,
             temperature=float(config.temperature),
             max_tokens=int(config.max_tokens),
+            streaming=True,
         )
 
     def _run(self, prompt: str) -> str:
@@ -52,6 +53,12 @@ class LLMGenerationTool(BaseTool):
 
     def stream_text(self, prompt: str) -> Iterator[str]:
         for chunk in self._llm.stream([HumanMessage(content=prompt)]):
+            text = getattr(chunk, "content", None)
+            if text:
+                yield text
+
+    async def astream_text(self, prompt: str) -> AsyncIterator[str]:
+        async for chunk in self._llm.astream([HumanMessage(content=prompt)]):
             text = getattr(chunk, "content", None)
             if text:
                 yield text

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.documents import Document
 from langchain_core.tools import BaseTool
@@ -213,6 +213,56 @@ class MilvusVectorTool(BaseTool):
             return True
         except Exception:
             return False
+
+    def point_get(
+        self,
+        ids: list[str],
+        by: Literal["chunk_id", "node_id"] = "chunk_id",
+        limit: int = 100,
+    ) -> list[Document]:
+        """Fetch documents by exact ID list (point-get, no vector needed).
+
+        Builds a Milvus scalar filter ``chunk_id in [...]`` or ``node_id in [...]``
+        and calls ``client.query``.  Rows with empty text are skipped.
+
+        Args:
+            ids:   List of chunk_id or node_id values to retrieve.
+            by:    Which field to match ("chunk_id" or "node_id").
+            limit: Maximum rows to return.
+
+        Returns:
+            List of Documents with ``search_source="point_get"`` in metadata.
+        """
+        if self._client is None or not ids:
+            return []
+        field = "chunk_id" if by == "chunk_id" else "node_id"
+        escaped = ", ".join([f'"{str(i)}"' for i in ids])
+        filter_expr = f"{field} in [{escaped}]"
+        _output_fields = [
+            "text", "doc_type", "chunk_type", "source",
+            "drug_name", "canonical_name", "normalized_name",
+            "aliases_text", "alias_norms_text", "answer",
+            "node_id", "chunk_id",
+        ]
+        try:
+            rows = self._client.query(
+                collection_name=self.collection_name,
+                filter=filter_expr,
+                output_fields=_output_fields,
+                limit=int(limit),
+            ) or []
+        except Exception:
+            return []
+
+        docs: list[Document] = []
+        for row in rows:
+            text = str(row.get("text") or "").strip()
+            if not text:
+                continue
+            metadata = {k: row.get(k) for k in row if k != "text"}
+            metadata["search_source"] = "point_get"
+            docs.append(Document(page_content=text, metadata=metadata))
+        return docs
 
     def upsert_documents(self, docs: list[Document]) -> int:
         if self._client is None:
