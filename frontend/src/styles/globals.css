@@ -1,0 +1,100 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-base text-paper font-sans;
+    /* subtle bamboo-paper horizontal ruling — xuan zhi texture */
+    background-image: repeating-linear-gradient(
+      0deg,
+      transparent 0px,
+      transparent 47px,
+      rgba(122, 171, 138, 0.04) 47px,
+      rgba(122, 171, 138, 0.04) 48px
+    );
+  }
+
+  /* gold-tinted scrollbar */
+  ::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-surface;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(201, 168, 76, 0.25);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(201, 168, 76, 0.55);
+  }
+}
+
+@layer components {
+  /* markdown rendering on dark bg */
+  .markdown-body h1,
+  .markdown-body h2,
+  .markdown-body h3 {
+    @apply text-paper font-semibold mt-4 mb-2;
+  }
+  .markdown-body p {
+    @apply leading-relaxed mb-2;
+  }
+  .markdown-body ul,
+  .markdown-body ol {
+    @apply pl-5 mb-2;
+  }
+  .markdown-body li {
+    @apply mb-1;
+  }
+  .markdown-body code {
+    @apply bg-base text-accent px-1 rounded text-sm;
+    border: 1px solid rgba(201, 168, 76, 0.2);
+  }
+  .markdown-body pre {
+    @apply bg-base rounded-lg p-3 overflow-x-auto mb-2;
+    border: 1px solid rgba(201, 168, 76, 0.15);
+  }
+  .markdown-body pre code {
+    @apply bg-transparent text-paper p-0;
+    border: none;
+  }
+  .markdown-body table {
+    @apply w-full border-collapse text-sm mb-2;
+  }
+  .markdown-body th,
+  .markdown-body td {
+    @apply border border-surface-3 px-3 py-1 text-left;
+  }
+  .markdown-body th {
+    @apply bg-surface text-jade;
+  }
+  .markdown-body a {
+    @apply text-accent underline;
+  }
+  .markdown-body blockquote {
+    @apply border-l-2 border-accent pl-3 text-muted italic my-2;
+  }
+  .markdown-body strong {
+    @apply text-accent-light font-semibold;
+  }
+
+  /* decorative gold gradient divider */
+  .gold-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(201, 168, 76, 0.35), transparent);
+  }
+
+  /* gold glow focus ring */
+  .gold-ring:focus-within {
+    box-shadow: 0 0 0 1px rgba(201, 168, 76, 0.45), 0 0 12px rgba(201, 168, 76, 0.08);
+  }
+}

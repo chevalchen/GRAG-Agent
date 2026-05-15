@@ -41,3 +41,7 @@ dependencies = [
     "unstructured-client>=0.42.10",
     "uvicorn>=0.38.0",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -10,12 +10,9 @@ from src.app.config import DEFAULT_CONFIG, GraphRAGConfig
 from src.app.offline_ingestion.graphs.ingestion_graph import OfflineIngestionGraph
 from src.app.offline_ingestion.nodes.health_chunk_node import make_health_chunk_node
 from src.app.offline_ingestion.nodes.health_milvus_index_node import make_health_milvus_index_node
-from src.app.online_qa.graphs.online_qa_graph import build_graph
 from src.app.online_qa.nodes.answer_node import _build_context_with_budget
 from src.app.online_qa.nodes.health_retrieve_node import make_health_retrieve_node
-from src.core.tools.graph.neo4j_tool import Neo4jGraphTool
 from src.core.tools.llm.generation_tool import LLMGenerationTool
-from src.core.tools.retrieval.bm25_tool import BM25Tool
 from src.core.tools.vector.milvus_tool import MilvusVectorTool
 
 
@@ -136,61 +133,9 @@ class HealthAnswerContextTests(unittest.TestCase):
                 },
             )
         ]
-        context, _, _ = _build_context_with_budget(docs, {}, total_budget=400, per_doc_chars=200)
+        context, _, _ = _build_context_with_budget(docs, total_budget=400, per_doc_chars=200)
         self.assertIn("【健康科普】", context)
         self.assertIn("回答：建议规律作息，减少熬夜。", context)
-
-
-class HealthGraphE2ETests(unittest.TestCase):
-    def test_health_route_hits_health_collection_and_builds_answer_context(self):
-        llm = MagicMock(spec=LLMGenerationTool)
-        llm.invoke_text.side_effect = [
-            '{"query_intent":"health_advice","use_graph":false,"use_drug_vec":false,"use_lit_vec":false,"use_health_vec":true,"source_hint":[],"keywords":["失眠"],"reason":"health"}',
-            "保持规律作息。",
-        ]
-        bm25 = MagicMock(spec=BM25Tool)
-        bm25.invoke.return_value = []
-        milvus = MagicMock(spec=MilvusVectorTool)
-        milvus.invoke.return_value = []
-        health_milvus = MagicMock(spec=MilvusVectorTool)
-        health_milvus.invoke.return_value = [
-            Document(
-                page_content="失眠怎么调理",
-                metadata={
-                    "node_id": "h1",
-                    "chunk_id": "h1",
-                    "doc_type": "health_popularization",
-                    "chunk_type": "qa",
-                    "source": "health_popularization",
-                    "answer": "建议减少熬夜，保持规律作息。",
-                },
-            )
-        ]
-        neo4j = MagicMock(spec=Neo4jGraphTool)
-        neo4j.invoke.return_value = []
-        neo4j._graph = MagicMock()
-        neo4j._graph.query.return_value = []
-
-        config = GraphRAGConfig(**{**DEFAULT_CONFIG.to_dict(), "top_k": 3})
-        graph = build_graph(
-            config,
-            bm25_tool=bm25,
-            milvus_tool=milvus,
-            health_milvus_tool=health_milvus,
-            neo4j_tool=neo4j,
-            llm_tool=llm,
-        )
-
-        state = graph.invoke(
-            {"query": "最近总失眠怎么办", "metrics": {}},
-            config={"configurable": {"thread_id": "t-health-e2e"}},
-        )
-
-        self.assertEqual(state["answer"], "保持规律作息。")
-        self.assertTrue(health_milvus.invoke.called)
-        answer_prompt = llm.invoke_text.call_args_list[-1].args[0]
-        self.assertIn("【健康科普】", answer_prompt)
-        self.assertIn("回答：建议减少熬夜，保持规律作息。", answer_prompt)
 
 
 if __name__ == "__main__":

@@ -56,6 +56,9 @@ class _FakeGraph:
         con.close()
         return {"answer": f"ok:{state.get('query', '')}"}
 
+    async def ainvoke(self, state, config=None):
+        return self.invoke(state, config)
+
 
 class TestMcpSessionTools(unittest.TestCase):
     def test_tcm_query_then_session_list_shows_session_id(self):

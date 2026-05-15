@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import uuid
 from dataclasses import dataclass, replace
@@ -102,10 +103,20 @@ def ask_question(runtime: ServerRuntime, question: str, session_id: str = "", vi
     if not query:
         raise ValueError("请提供问题。")
     sid = (session_id or "").strip() or str(uuid.uuid4())
-    state = runtime.graph.invoke(
-        {"query": query, "metrics": {"via": via}},
-        config={"configurable": {"thread_id": sid}},
-    )
+    input_state = {"query": query, "metrics": {"via": via}, "iteration_count": 0}
+    graph_config = {"configurable": {"thread_id": sid}}
+    # answer_node is async; use ainvoke so LangGraph can run the async node.
+    # Try to reuse a running loop (FastAPI context); fall back to asyncio.run().
+    try:
+        loop = asyncio.get_running_loop()
+        # We're inside a running loop — run in a thread-isolated event loop.
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(asyncio.run, runtime.graph.ainvoke(input_state, config=graph_config))
+            state = future.result()
+    except RuntimeError:
+        # No running loop — safe to call asyncio.run() directly.
+        state = asyncio.run(runtime.graph.ainvoke(input_state, config=graph_config))
     answer = (state or {}).get("answer") or ""
     return {"answer": answer or "未生成回答。", "session_id": sid}
 

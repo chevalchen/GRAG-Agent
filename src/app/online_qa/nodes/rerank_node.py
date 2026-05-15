@@ -49,7 +49,7 @@ def make_rerank_node(
                     "rerank_candidates": 0,
                 },
             }
-        query = (state.get("query") or "").strip()
+        query = (state.get("rewritten_query") or state.get("query") or "").strip()
         routing = state.get("routing") or {}
         complexity = str(routing.get("complexity_level") or "complex")
         if len(docs) <= int(top_k):

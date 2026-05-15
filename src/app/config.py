@@ -63,6 +63,11 @@ class GraphRAGConfig:
     checkpointer_path: str = ".checkpoints/tcm.db"
     bm25_cache_path: str = ".cache/bm25_index.pkl"
     enable_long_term_write: bool = False
+    # frontend CORS origins (space or comma separated when set via env)
+    frontend_origins: str = "http://localhost:5173"
+    # sufficiency loop max iterations (Stage 2)
+    sufficiency_max_iters: int = 1
+    enable_stream: bool = True
 
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "GraphRAGConfig":
@@ -161,3 +166,8 @@ class Config:
     CHECKPOINTER_PATH = getattr(env_utils, "CHECKPOINTER_PATH", None) or DEFAULT_CONFIG.checkpointer_path
     BM25_CACHE_PATH = getattr(env_utils, "BM25_CACHE_PATH", None) or DEFAULT_CONFIG.bm25_cache_path
     SESSION_ID = getattr(env_utils, "SESSION_ID", None) or None
+    # FRONTEND_ORIGINS: space or comma separated list, e.g. "http://localhost:5173,http://localhost:8080"
+    _origins_raw = getattr(env_utils, "FRONTEND_ORIGINS", None) or DEFAULT_CONFIG.frontend_origins
+    FRONTEND_ORIGINS: list[str] = [o.strip() for o in _origins_raw.replace(",", " ").split() if o.strip()]
+    SUFFICIENCY_MAX_ITERS = int(getattr(env_utils, "SUFFICIENCY_MAX_ITERS", None) or DEFAULT_CONFIG.sufficiency_max_iters)
+    ENABLE_STREAM = _as_bool(getattr(env_utils, "ENABLE_STREAM", None), default=True)

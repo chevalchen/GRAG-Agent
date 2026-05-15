@@ -10,6 +10,34 @@ from pydantic import BaseModel, Field
 
 from src.app.config import GraphRAGConfig
 
+# Allowed depth values for expand_by_node_id.
+# Neo4j 5 does not support parameterized variable-length path depth,
+# so depth is injected via safe f-string after whitelist validation.
+_DEPTH_WHITELIST: frozenset[int] = frozenset({1, 2, 3})
+
+# --- Stage 3 Cypher templates ---
+
+_CYPHER_CAUTION_FOR = """
+MATCH (pop:Concept {conceptType: 'Population'})-[:CAUTION_FOR]-(drug:Concept {conceptType: 'Drug'})
+WHERE pop.name CONTAINS $name
+RETURN drug.nodeId AS drug_node_id, drug.name AS drug_name, pop.name AS reason_label
+LIMIT $limit
+"""
+
+_CYPHER_HAS_ADVERSE = """
+MATCH (adv:Concept {conceptType: 'AdverseReaction'})-[:HAS_ADVERSE_REACTION]-(drug:Concept {conceptType: 'Drug'})
+WHERE adv.name CONTAINS $name
+RETURN drug.nodeId AS drug_node_id, drug.name AS drug_name, adv.name AS reason_label
+LIMIT $limit
+"""
+
+_CYPHER_INDICATES_SYM = """
+MATCH (sym:Concept {conceptType: 'Symptom'})-[:INDICATES]-(drug:Concept {conceptType: 'Drug'})
+WHERE sym.name CONTAINS $name
+RETURN drug.nodeId AS drug_node_id, drug.name AS drug_name, sym.name AS reason_label
+LIMIT $limit
+"""
+
 
 class _Neo4jGraphToolInput(BaseModel):
     """Neo4j 图工具输入"""
@@ -208,6 +236,141 @@ class Neo4jGraphTool(BaseTool):
                 )
             )
         return docs
+
+    # ------------------------------------------------------------------
+    # Stage 3 public helpers
+    # ------------------------------------------------------------------
+
+    def expand_by_node_id(
+        self,
+        node_id: str,
+        depth: int = 2,
+        rel_types: list[str] | None = None,
+    ) -> list[dict]:
+        """Fetch the TCM drug subgraph by nodeId, traversing up to `depth` hops.
+
+        Depth is validated against a whitelist {1, 2, 3} to prevent injection.
+        Neo4j 5 does not support parameterized variable-length path depth, so
+        the value is safely injected via f-string after whitelist check.
+
+        Args:
+            node_id:   The Concept.nodeId to expand from.
+            depth:     Number of hops (1–3). Values outside whitelist default to 2.
+            rel_types: Optional list of relationship type names to keep
+                       (Python-side filter; all rels are fetched then filtered).
+
+        Returns:
+            List of dicts with keys:
+                source_id, source_name, source_type,
+                rel_path (list of rel type strings along path),
+                target_id, target_name, target_type
+        """
+        if self._graph is None:
+            return []
+        safe_depth = int(depth) if int(depth) in _DEPTH_WHITELIST else 2
+        cypher = f"""
+        MATCH (n:Concept {{nodeId: $node_id}})-[r*1..{safe_depth}]-(m:Concept)
+        RETURN
+            n.nodeId AS source_id,
+            coalesce(n.name, n.description, '') AS source_name,
+            coalesce(n.conceptType, head(labels(n))) AS source_type,
+            [rel IN r | type(rel)] AS rel_path,
+            m.nodeId AS target_id,
+            coalesce(m.name, m.description, '') AS target_name,
+            coalesce(m.conceptType, head(labels(m))) AS target_type
+        LIMIT $limit
+        """
+        try:
+            rows = self._graph.query(cypher, {"node_id": str(node_id), "limit": 100})
+        except Exception:
+            return []
+
+        result: list[dict] = []
+        for row in rows or []:
+            rel_path: list[str] = row.get("rel_path") or []
+            # Python-side rel_types filter when caller requests specific edge types
+            if rel_types and not any(r in rel_types for r in rel_path):
+                continue
+            result.append({
+                "source_id": row.get("source_id") or "",
+                "source_name": row.get("source_name") or "",
+                "source_type": row.get("source_type") or "",
+                "rel_path": rel_path,
+                "target_id": row.get("target_id") or "",
+                "target_name": row.get("target_name") or "",
+                "target_type": row.get("target_type") or "",
+            })
+        return result
+
+    def find_drugs_by_caution(
+        self,
+        population_name: str | None = None,
+        symptom_name: str | None = None,
+        adverse_name: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]:
+        """Find drugs linked to a population caution, symptom indication, or adverse reaction.
+
+        Each non-None argument triggers an independent Cypher query.
+        Results across queries are merged and deduplicated by drug_node_id.
+
+        Args:
+            population_name: Population group to check CAUTION_FOR (e.g. "孕妇").
+            symptom_name:    Symptom/disease for INDICATES direction (e.g. "月经不调").
+            adverse_name:    Adverse reaction for HAS_ADVERSE_REACTION (e.g. "头晕").
+            limit:           Per-query row limit.
+
+        Returns:
+            List of dicts: {drug_node_id, drug_name, reason_path: [label, rel_type]}
+        """
+        if self._graph is None:
+            return []
+
+        raw: list[dict] = []
+        params = {"limit": int(limit)}
+
+        if population_name:
+            try:
+                for row in (self._graph.query(_CYPHER_CAUTION_FOR, {**params, "name": population_name}) or []):
+                    raw.append({
+                        "drug_node_id": row.get("drug_node_id") or "",
+                        "drug_name": row.get("drug_name") or "",
+                        "reason_path": [row.get("reason_label") or "", "CAUTION_FOR"],
+                    })
+            except Exception:
+                pass
+
+        if adverse_name:
+            try:
+                for row in (self._graph.query(_CYPHER_HAS_ADVERSE, {**params, "name": adverse_name}) or []):
+                    raw.append({
+                        "drug_node_id": row.get("drug_node_id") or "",
+                        "drug_name": row.get("drug_name") or "",
+                        "reason_path": [row.get("reason_label") or "", "HAS_ADVERSE_REACTION"],
+                    })
+            except Exception:
+                pass
+
+        if symptom_name:
+            try:
+                for row in (self._graph.query(_CYPHER_INDICATES_SYM, {**params, "name": symptom_name}) or []):
+                    raw.append({
+                        "drug_node_id": row.get("drug_node_id") or "",
+                        "drug_name": row.get("drug_name") or "",
+                        "reason_path": [row.get("reason_label") or "", "INDICATES"],
+                    })
+            except Exception:
+                pass
+
+        # Deduplicate by drug_node_id, preserve first occurrence
+        seen: set[str] = set()
+        deduped: list[dict] = []
+        for item in raw:
+            key = item["drug_node_id"]
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(item)
+        return deduped
 
     def _multi_hop(self, a: str, b: str, max_depth: int, max_nodes: int) -> list[Document]:
         cypher = """

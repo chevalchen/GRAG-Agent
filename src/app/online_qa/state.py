@@ -6,52 +6,46 @@ from typing import Annotated
 from langchain_core.documents import Document
 from typing_extensions import TypedDict
 
-class RoutingSignal(TypedDict):
-    query_intent: str
-    complexity_level: str
-    use_graph: bool
-    use_drug_vec: bool
-    use_lit_vec: bool
-    use_health_vec: bool
-    source_hint: list[str]
+
+class RoutingSignal(TypedDict, total=False):
+    intent: str            # chat | theory | symptom_to_drug | conditions_exact
+    complexity_level: str  # simple | complex
     keywords: list[str]
     reason: str
 
 
-class ResolvedDrug(TypedDict, total=False):
-    canonical_name: str
-    normalized_name: str
-    node_id: str
-    matched_alias: str
-    match_type: str
-
-
 class OnlineQAState(TypedDict, total=False):
-    """
-    在线问答状态
-    
-    Attributes:
-        query: 用户查询
-        analysis: 查询分析
-        hybrid_docs: 混合检索文档
-        graph_docs: 图检索文档
-        docs_final: 最终文档
-        metrics: 指标
-        answer: 答案
-        history: 对话历史
-        error: 错误信息
-    """
+    # --- input ---
     query: str
+    rewritten_query: str
+    extracted_entities: dict[str, list[str]]  # {drugs:[], diseases:[], symptoms:[]}
+
+    # --- routing ---
     routing: RoutingSignal | None
-    resolved_drug: ResolvedDrug | None
+
+    # --- retrieval bridges ---
+    kg_anchor_id: str | None       # forward: MilvusSearch → GraphEnrich
+    milvus_doc_ids: list[str]      # reverse: Neo4jSearch → MilvusFetch
+
+    # --- retrieval results ---
+    milvus_docs: list[Document]
     graph_docs: list[Document]
-    drug_docs: list[Document]
-    lit_docs: list[Document]
-    health_docs: list[Document]
+
+    # --- fusion / rerank ---
     docs_rrf: list[Document]
     docs_final: list[Document]
-    top_k: int
-    metrics: Annotated[dict, operator.or_]
+
+    # --- control flow ---
+    sufficiency: str | None        # "sufficient" | "insufficient"
+    iteration_count: int           # starts 0; incremented on insufficient
+    safety_blocked: bool
+    safety_reason: str
+
+    # --- output ---
     answer: str
+    next_questions: list[str]
+
+    # --- multi-turn ---
     history: Annotated[list[dict], operator.add]
+    metrics: Annotated[dict, operator.or_]
     error: str | None

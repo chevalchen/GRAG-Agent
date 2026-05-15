@@ -1,22 +1,52 @@
+# ── Secrets & environment ──────────────────────────────────
 .env
 .env.*
 !.env.example
+
+# ── Python ─────────────────────────────────────────────────
 __pycache__/
 *.pyc
-*.log
-.vscode/
-.idea/
+*.pyo
+*.pyd
 .venv/
+.uv-cache/
+
+# ── Database & session persistence ─────────────────────────
 .checkpoints/
-*.md
-/data/
-TASK.md
-MedicalRAG0330.md
-/original_database/
-.claude/
-!README.md
+*.db
 *.sst
 *.wal
+
+# ── Caches ─────────────────────────────────────────────────
+.cache/
+.pytest_cache/
+
+# ── Pipeline & benchmark output ────────────────────────────
+ai_output/
+/data/
+/original_database/
+benchmark/
+
+# ── Logs & raw data dumps ──────────────────────────────────
+*.log
 *.jsonl
+
+# ── Editor & IDE ───────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+.trae/
+Thumbs.db
+
+# ── Legacy / personal notes ────────────────────────────────
+TASK.md
+MedicalRAG0330.md
 ./test
 ./useless_files
+PROCESS.md
+RESEARCH.md
+plan4health.md
+
+# ── Claude Code internal ───────────────────────────────────
+.claude/worktrees/
+.claude/settings.local.json

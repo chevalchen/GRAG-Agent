@@ -27,19 +27,24 @@ class BM25Tool(BaseTool):
         *,
         documents: list[Document] | None = None,
         cache_path: str = ".cache/bm25_index.pkl",
+        filter_expr: str | None = None,
     ):
         """
-        初始化BM25工具
+        Initialize the BM25 tool.
 
         Args:
-            milvus_tool: MilvusVectorTool实例，用于懒加载构建索引
-            documents: 直接传入文档列表（优先级高于milvus_tool）
-            cache_path: 缓存文件路径
+            milvus_tool:  MilvusVectorTool instance for lazy corpus loading.
+            documents:    Pre-built document list (takes priority over milvus_tool).
+            cache_path:   Disk cache path for the serialised BM25 index.
+            filter_expr:  Optional Milvus filter expression for corpus selection.
+                          ``None`` (default) fetches the full corpus.
+                          Example: ``'doc_type in ["drug", "tcm_literature"]'``
         """
         super().__init__()
         self._milvus_tool = milvus_tool
         self._documents = documents
         self._cache_path = Path(cache_path)
+        self._filter_expr = filter_expr  # None = full corpus
         self._retriever = None
         self._loaded = False
 
@@ -59,9 +64,9 @@ class BM25Tool(BaseTool):
             self._loaded = True
             return self._retriever is not None
 
-        # 3. 从Milvus懒加载
+        # 3. Lazy-load from Milvus using the configured filter (or full corpus)
         if self._milvus_tool is not None:
-            docs = self._fetch_from_milvus()
+            docs = self._fetch_from_milvus(self._filter_expr)
             if docs:
                 self._build_from_documents(docs)
                 self._save_to_cache()
@@ -99,8 +104,16 @@ class BM25Tool(BaseTool):
         except Exception:
             pass
 
-    def _fetch_from_milvus(self) -> list[Document]:
-        """从Milvus获取文档构建索引"""
+    def _fetch_from_milvus(self, filter_expr: str | None = None) -> list[Document]:
+        """Fetch documents from Milvus to build the BM25 index corpus.
+
+        Args:
+            filter_expr: Milvus filter expression.  ``None`` (or empty string)
+                         fetches the full corpus without a doc_type constraint.
+                         Pass e.g. ``'doc_type == "drug"'`` to restrict the corpus.
+                         When not supplied, falls back to the instance-level
+                         ``filter_expr`` set at construction time (default: None).
+        """
         if self._milvus_tool is None:
             return []
         try:
@@ -109,9 +122,15 @@ class BM25Tool(BaseTool):
             if client is None:
                 return []
 
+            # Resolve effective filter: caller arg > instance default > full corpus ("")
+            effective_filter: str = (
+                filter_expr if filter_expr is not None
+                else (self._filter_expr if self._filter_expr is not None else "")
+            )
+
             rows = client.query(
                 collection_name=collection_name,
-                filter='doc_type == "drug"',
+                filter=effective_filter,
                 output_fields=[
                     "text",
                     "doc_type",

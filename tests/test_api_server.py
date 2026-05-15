@@ -45,20 +45,24 @@ class _FakeGraph:
         sid = ((config or {}).get("configurable") or {}).get("thread_id", "")
         return {"answer": f"ok:{state.get('query')}:{sid}"}
 
+    async def ainvoke(self, state, config=None):
+        return self.invoke(state, config)
+
 
 class TestApiServer(unittest.TestCase):
     def test_cors_preflight_options(self):
+        # Default FRONTEND_ORIGINS includes http://localhost:5173 (Vite dev server)
         with TestClient(app) as client:
             response = client.options(
                 "/api/v1/health",
                 headers={
-                    "Origin": "http://127.0.0.1:5500",
+                    "Origin": "http://localhost:5173",
                     "Access-Control-Request-Method": "GET",
                     "Access-Control-Request-Headers": "x-trace-id,content-type",
                 },
             )
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers.get("access-control-allow-origin"), "http://127.0.0.1:5500")
+        self.assertEqual(response.headers.get("access-control-allow-origin"), "http://localhost:5173")
 
     def test_health_endpoint(self):
         with TestClient(app) as client:
