@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import logging
 import sqlite3
 import sys
@@ -105,9 +106,11 @@ def _ask_once(
     session_id: str | None,
 ):
     sid = session_id or str(uuid.uuid4())
-    state = online_graph.invoke(
-        {"query": query, "metrics": {"stream": stream}},
-        config={"configurable": {"thread_id": sid}},
+    state = asyncio.run(
+        online_graph.ainvoke(
+            {"query": query, "metrics": {"stream": stream}},
+            config={"configurable": {"thread_id": sid}},
+        )
     )
     docs = state.get("docs_final", [])
     if verbose:
